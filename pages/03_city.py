@@ -71,7 +71,9 @@ st.write(f"**{selected_pref} {selected_city}** のデータをご案内します
 if menu == "概要":
     st.markdown("### 財政状況の概要（パッケージ表示）")
     if not df_ov_city.empty:
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        # タブに「🏆 県内ランキング・総合指標」を追加
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+            "🏆 県内ランキング・総合指標",
             "⚖️ 基準財政・財政力・標準規模", 
             "💰 財政規模・バランス", 
             "👥 人口・職員数", 
@@ -87,126 +89,153 @@ if menu == "概要":
         def get_cols_by_keywords(keywords):
             return [col for col in num_cols if any(kw in col for kw in keywords)]
 
+        # --- 新設タブ: 🏆 県内ランキング・総合指標 ---
         with tab1:
-            st.markdown("#### 標準財政規模・基準財政需要額・収入額および財政力指数の推移")
-            cols_dem_inc = get_cols_by_keywords(['基準財政需要額', '基準財政収入額', '標準財政規模'])
-            cols_pow = get_cols_by_keywords(['財政力指数'])
+            st.markdown("#### 🏆 県内自治体における財政指標ランキング & 総合健全化指標")
             
-            if cols_dem_inc or cols_pow:
-                fig_d = make_subplots(specs=[[{"secondary_y": True}]])
-                for col in cols_dem_inc:
-                    fig_d.add_trace(go.Scatter(x=df_ov_city['年度'], y=df_ov_city[col], mode='lines+markers', name=col), secondary_y=False)
-                for col in cols_pow:
-                    fig_d.add_trace(go.Scatter(x=df_ov_city['年度'], y=df_ov_city[col], mode='lines+markers', name=col, line=dict(dash='dash', color='orange')), secondary_y=True)
-                fig_d.update_layout(title="標準財政規模・需要額・収入額 vs 財政力指数", xaxis_title="年度", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                fig_d.update_yaxes(title_text="金額（千円）", secondary_y=False, tickformat=",")
-                fig_d.update_yaxes(title_text="財政力指数", secondary_y=True, tickformat=".2f")
-                st.plotly_chart(fig_d, use_container_width=True)
-            else:
-                st.info("該当するデータが見つかりません。")
-
-        with tab2:
-            st.markdown("#### 財政バランス（収支関連）の推移")
-            cols_scale = get_cols_by_keywords(['実質収支', '単年度収支', '実質単年度収支']) or num_cols[:3]
-            fig1 = px.line(df_ov_city, x='年度', y=cols_scale, markers=True, title="収支関連指標の推移")
-            fig1.update_layout(yaxis_tickformat=",", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            fig1.update_yaxes(title_text="金額（千円）")
-            st.plotly_chart(fig1, use_container_width=True)
-
-        with tab3:
-            st.markdown("#### 人口・職員数の推移（人数系のみ）")
-            cols_pop = [c for c in num_cols if ('人口' in c or '職員' in c or '人' in c) and not any(kw in c for kw in ['千円', 'パーセント', '%', '割合', '比率'])]
-            if cols_pop:
-                fig2 = px.line(df_ov_city, x='年度', y=cols_pop, markers=True, title="人口・職員数（人数）の推移")
-                fig2.update_layout(yaxis_tickformat=",", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                fig2.update_yaxes(title_text="人数（人）")
-                st.plotly_chart(fig2, use_container_width=True)
-            else:
-                st.info("人口・職員数に関するデータが見つかりません。")
-
-        with tab4:
-            st.markdown("#### 地域産業構造の推移（産業別就業者・構造割合）")
-            cols_ind = get_cols_by_keywords(['産業', '1次', '2次', '3次', '第１次', '第２次', '第３次', '農業', '製造業', 'サービス業'])
-            cols_ind_ratio = [c for c in cols_ind if any(kw in c for kw in ['割合', '比率', '%', 'パーセント'])] or cols_ind
+            # 対象年度の選択
+            available_ov_years = sorted(df_overview['年度'].astype(str).unique())
+            latest_year = available_ov_years[-1] if available_ov_years else ""
+            selected_rank_year = st.selectbox("分析対象年度を選択", available_ov_years, index=len(available_ov_years)-1, key="rank_year_select")
             
-            if cols_ind_ratio:
-                fig_ind = px.bar(
-                    df_ov_city, x='年度', y=cols_ind_ratio, 
-                    title="産業別割合の推移", barmode='stack'
-                )
-                fig_ind.update_layout(yaxis_tickformat=".1f", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                fig_ind.update_yaxes(title_text="割合（%）")
-                st.plotly_chart(fig_ind, use_container_width=True)
-            else:
-                st.info("概要データ内に産業割合に関するカラムが見つかりません。")
-
-        with tab5:
-            st.markdown("#### 経常収支比率の推移（財政構造の弾力性）")
-            cols_keijo = get_cols_by_keywords(['経常収支比率'])
+            # 県内全自治体データの抽出と統合
+            df_ov_pref_y = df_overview[(df_overview['都道府県'] == selected_pref) & (df_overview['年度'].astype(str) == str(selected_rank_year))].copy()
+            df_bonds_pref_y = df_bonds[(df_bonds['都道府県'] == selected_pref) & (df_bonds['年度'].astype(str) == str(selected_rank_year))].copy() if not df_bonds.empty else pd.DataFrame()
             
-            if cols_keijo:
-                fig_k = px.line(df_ov_city, x='年度', y=cols_keijo, markers=True, title="経常収支比率の推移")
-                fig_k.add_hline(y=80.0, line_dash="dash", line_color="green", annotation_text="適正水準目安 (80%)", annotation_position="bottom right")
-                fig_k.add_hline(y=90.0, line_dash="dash", line_color="red", annotation_text="硬直化警戒水準 (90%)", annotation_position="top right")
+            if not df_ov_pref_y.empty:
+                # 地方債・基金データのマージ
+                if not df_bonds_pref_y.empty:
+                    b_cols = ['団体名', '地方債現在高_合計', '積立金現在高_合計', '債務負担行為額(翌年度以降支出予定額)_合計']
+                    b_cols_exist = [c for c in b_cols if c in df_bonds_pref_y.columns]
+                    df_rank = pd.merge(df_ov_pref_y, df_bonds_pref_y[b_cols_exist], on='団体名', how='left')
+                else:
+                    df_rank = df_ov_pref_y.copy()
                 
-                fig_k.update_layout(yaxis_tickformat=".1f", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                fig_k.update_yaxes(title_text="比率（%）")
-                st.plotly_chart(fig_k, use_container_width=True)
-                st.caption("※経常収支比率が高くなるほど人件費や扶助費などの義務的経費に財源が奪われ、新たな政策課題への対応能力（財政の弾力性）が低下していることを意味します。")
-            else:
-                st.info("経常収支比率のデータが見つかりません。")
+                # 人口カラムの取得
+                pop_col = get_population_col(df_rank)
+                if pop_col:
+                    df_rank['人口_num'] = pd.to_numeric(df_rank[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
+                else:
+                    df_rank['人口_num'] = 0
+                
+                # 数値データの補正
+                for target_c in ['地方債現在高_合計', '積立金現在高_合計', '債務負担行為額(翌年度以降支出予定額)_合計', '財政力指数', '経常収支比率', '実質公債費比率', '将来負担比率']:
+                    if target_c in df_rank.columns:
+                        df_rank[target_c] = pd.to_numeric(df_rank[target_c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce')
+                
+                # 複合・健全化指標の事前計算
+                if all(c in df_rank.columns for c in ['地方債現在高_合計', '積立金現在高_合計']):
+                    debt_val = df_rank['地方債現在高_合計'].fillna(0)
+                    fund_val = df_rank['積立金現在高_合計'].fillna(0)
+                    commit_val = df_rank['債務負担行為額(翌年度以降支出予定額)_合計'].fillna(0) if '債務負担行為額(翌年度以降支出予定額)_合計' in df_rank.columns else 0
+                    
+                    # 実質将来負担残高（推計） = 地方債 ＋ 債務負担行為額 － 基金
+                    df_rank['実質将来負担残高_推計'] = debt_val + commit_val - fund_val
+                
+                if '人口_num' in df_rank.columns:
+                    df_rank['1人当たり地方債(千円)'] = (df_rank['地方債現在高_合計'] / df_rank['人口_num']).round(1)
+                    df_rank['1人当たり基金(千円)'] = (df_rank['積立金現在高_合計'] / df_rank['人口_num']).round(1)
+                    df_rank['1人当たり実質将来負担(千円)'] = (df_rank['実質将来負担残高_推計'] / df_rank['人口_num']).round(1)
 
-        with tab6:
-            st.markdown("#### 地方財政健全化法に基づく健全化判断比率")
-            cols_kenzen = get_cols_by_keywords(['実質赤字比率', '連結実質赤字比率', '実質公債費比率', '将来負担比率'])
-            
-            if cols_kenzen:
-                cols_small = [c for c in cols_kenzen if '将来負担比率' not in c]
-                cols_large = [c for c in cols_kenzen if '将来負担比率' in c]
+                total_cities_count = len(df_rank)
                 
-                col_left, col_right = st.columns(2)
-                
-                with col_left:
-                    if cols_small:
-                        fig_s = px.line(df_ov_city, x='年度', y=cols_small, markers=True, title="実質赤字・連結赤字・実質公債費比率")
-                        if any('実質公債費比率' in c for c in cols_small):
-                            fig_s.add_hline(y=15.0, line_dash="dash", line_color="orange", annotation_text="早期健全化基準 (15%)", annotation_position="top left")
-                            fig_s.add_hline(y=25.0, line_dash="dash", line_color="red", annotation_text="財政再生基準 (25%)", annotation_position="top left")
-                        fig_s.update_layout(yaxis_tickformat=".1f", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                        fig_s.update_yaxes(title_text="比率（%）")
-                        st.plotly_chart(fig_s, use_container_width=True)
-                
-                with col_right:
-                    if cols_large:
-                        fig_l = px.line(df_ov_city, x='年度', y=cols_large, markers=True, title="将来負担比率")
-                        fig_l.add_hline(y=350.0, line_dash="dash", line_color="orange", annotation_text="早期健全化基準 (350%)", annotation_position="top left")
-                        fig_l.update_layout(yaxis_tickformat=".1f", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                        fig_l.update_yaxes(title_text="比率（%）")
-                        st.plotly_chart(fig_l, use_container_width=True)
-            else:
-                st.info("健全化判断比率に関するデータが見つかりません。")
+                # --- ランキング順位の算出 ---
+                if '財政力指数' in df_rank.columns:
+                    df_rank['財政力指数_順位'] = df_rank['財政力指数'].rank(ascending=False, method='min')
+                if '経常収支比率' in df_rank.columns:
+                    df_rank['経常収支比率_順位'] = df_rank['経常収支比率'].rank(ascending=True, method='min') # 比率が低いほど良好
+                if '1人当たり基金(千円)' in df_rank.columns:
+                    df_rank['1人当たり基金_順位'] = df_rank['1人当たり基金(千円)'].rank(ascending=False, method='min')
+                if '1人当たり実質将来負担(千円)' in df_rank.columns:
+                    df_rank['1人当たり実質将来負担_順位'] = df_rank['1人当たり実質将来負担(千円)'].rank(ascending=True, method='min') # 負担が少ないほど良好
 
-        with tab7:
-            st.markdown("#### 公債費負担比率・起債制限比率の推移")
-            cols_kosai = get_cols_by_keywords(['公債費負担比率', '公債費比率', '起債制限比率'])
-            
-            if cols_kosai:
-                fig_kosai = px.line(df_ov_city, x='年度', y=cols_kosai, markers=True, title="公債費負担比率等の推移")
-                fig_kosai.add_hline(y=15.0, line_dash="dash", line_color="orange", annotation_text="警戒基準 (15%)", annotation_position="bottom right")
-                fig_kosai.add_hline(y=20.0, line_dash="dash", line_color="red", annotation_text="危険基準・起債制限 (20%)", annotation_position="top right")
+                # 選択された自治体データの取得
+                city_rank_row = df_rank[df_rank['団体名'] == selected_city]
                 
-                fig_kosai.update_layout(yaxis_tickformat=".1f", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                fig_kosai.update_yaxes(title_text="比率（%）")
-                st.plotly_chart(fig_kosai, use_container_width=True)
-                st.caption("※一般財源のうち過去の借金返済（公債費）に投入された割合を示します。15%を超えると警戒水準、20%を超えると地方債の発行が制限されます。")
-            else:
-                st.info("公債費負担比率のデータが見つかりません。")
+                if not city_rank_row.empty:
+                    c_data = city_rank_row.iloc[0]
+                    
+                    st.markdown(f"##### 📍 {selected_pref}内における **{selected_city}** の順位・健全化要約（{selected_rank_year}年度 / 全{total_cities_count}自治体）")
+                    
+                    # 1. 概要カード (st.metric) の表示
+                    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                    
+                    with m_col1:
+                        if '財政力指数' in c_data and not pd.isna(c_data['財政力指数']):
+                            st.metric(
+                                label="財政力指数", 
+                                value=f"{c_data['財政力指数']:.2f}", 
+                                delta=f"県内 {int(c_data['財政力指数_順位'])}位 / {total_cities_count}",
+                                delta_color="normal"
+                            )
+                    
+                    with m_col2:
+                        if '経常収支比率' in c_data and not pd.isna(c_data['経常収支比率']):
+                            st.metric(
+                                label="経常収支比率", 
+                                value=f"{c_data['経常収支比率']:.1f}%", 
+                                delta=f"県内 {int(c_data['経常収支比率_順位'])}位（低い順）",
+                                delta_color="inverse"
+                            )
+                    
+                    with m_col3:
+                        if '1人当たり基金(千円)' in c_data and not pd.isna(c_data['1人当たり基金(千円)']):
+                            st.metric(
+                                label="1人当たり基金（貯金）", 
+                                value=f"{c_data['1人当たり基金(千円)']:,.1f} 千円", 
+                                delta=f"県内 {int(c_data['1人当たり基金_順位'])}位",
+                                delta_color="normal"
+                            )
 
-        with tab8:
-            st.markdown("#### 概要データテーブル一覧")
-            st.dataframe(df_ov_city, use_container_width=True)
-    else:
-        st.warning("対象自治体の概要データが存在しません。")
+                    with m_col4:
+                        if '1人当たり実質将来負担(千円)' in c_data and not pd.isna(c_data['1人当たり実質将来負担(千円)']):
+                            st.metric(
+                                label="1人当たり実質将来負担", 
+                                value=f"{c_data['1人当たり実質将来負担(千円)']:,.1f} 千円", 
+                                delta=f"県内 {int(c_data['1人当たり実質将来負担_順位'])}位（少ない順）",
+                                delta_color="inverse"
+                            )
+
+                    st.markdown("---")
+                    st.markdown("##### 📊 県内比較チャート")
+                    
+                    # 表示対象指標の選択
+                    rank_chart_options = {
+                        '財政力指数': '財政力指数（高い順＝自立度高）',
+                        '経常収支比率': '経常収支比率（低い順＝弾力性高）',
+                        '1人当たり基金(千円)': '1人当たり基金残高（高い順＝貯金多）',
+                        '1人当たり実質将来負担(千円)': '1人当たり実質将来負担残高（低い順＝将来負担少）'
+                    }
+                    rank_chart_options = {k: v for k, v in rank_chart_options.items() if k in df_rank.columns}
+                    
+                    selected_rank_col = st.selectbox("比較指標を選択", list(rank_chart_options.keys()), format_func=lambda x: rank_chart_options[x], key="rank_col_select")
+                    
+                    # 昇順・降順ソート設定
+                    asc_flag = True if '比率' in selected_rank_col or '負担' in selected_rank_col else False
+                    df_rank_sorted = df_rank.sort_values(selected_rank_col, ascending=asc_flag).copy()
+                    
+                    # 選択された市町村をハイライト表示するための色カラム
+                    df_rank_sorted['表示色'] = df_rank_sorted['団体名'].apply(lambda x: '選択中の自治体' if x == selected_city else 'その他自治体')
+                    
+                    fig_rank = px.bar(
+                        df_rank_sorted, x='団体名', y=selected_rank_col, color='表示色',
+                        text=selected_rank_col,
+                        title=f"{selected_pref}（{selected_rank_year}年度）{rank_chart_options[selected_rank_col]} 比較",
+                        color_discrete_map={'選択中の自治体': '#FF4B4B', 'その他自治体': '#1F77B4'}
+                    )
+                    fig_rank.update_traces(texttemplate='%{text:,.2f}', textposition='outside')
+                    fig_rank.update_layout(xaxis_title="自治体名", yaxis_title=selected_rank_col, showlegend=True)
+                    st.plotly_chart(fig_rank, use_container_width=True)
+                    
+                    # 比較テーブルの表示
+                    st.markdown("##### 📋 県内財政健全化指標 比較テーブル")
+                    disp_rank_cols = ['団体名', '財政力指数', '経常収支比率', '1人当たり基金(千円)', '1人当たり実質将来負担(千円)']
+                    disp_rank_cols = [c for c in disp_rank_cols if c in df_rank_sorted.columns]
+                    st.dataframe(df_rank_sorted[disp_rank_cols], use_container_width=True)
+                else:
+                    st.warning("選択した自治体のデータが見つかりません。")
+            else:
+                st.info("該当年度の県内比較データが存在しません。")
 
 # ==========================================
 # メニュー2: 歳入
