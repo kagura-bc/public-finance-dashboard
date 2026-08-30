@@ -4,7 +4,7 @@ import streamlit as st
 st.set_page_config(
     page_title="パブリックファイナンスダッシュボード", 
     page_icon="📊", 
-    layout="wide"
+    layout="wide" 
 )
 
 # 各ページの定義
