@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 from utils.data_loader import load_data
+import numpy as np
 
 # データの呼び出し（スプレッドシートからのロード結果を取得）
 loaded_data = load_data()
@@ -1320,7 +1321,7 @@ elif menu == "地方債・基金":
                     df_pref_sub_b_y['人口_num'] = 0
 
                 df_pref_sub_b_y[selected_bonds_col] = pd.to_numeric(df_pref_sub_b_y[selected_bonds_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                df_pref_sub_b_y['1人当たり金額(千円)'] = (df_pref_sub_b_y[selected_bonds_col] / df_pref_sub_b_y['人口_num'].replace(0, pd.NA)).round(2)
+                df_pref_sub_b_y['1人当たり金額(千円)'] = (df_pref_sub_b_y[selected_bonds_col]/ df_pref_sub_b_y['人口_num'].replace(0, np.nan)).round(2)
                 
                 sub_bonds_rank_mode = st.radio("比較表示モード", ["1人当たり金額（千円/人）", "総額（千円）"], horizontal=True, key="sub_bonds_mode")
                 target_bonds_rank_col = '1人当たり金額(千円)' if sub_bonds_rank_mode == "1人当たり金額（千円/人）" else selected_bonds_col
