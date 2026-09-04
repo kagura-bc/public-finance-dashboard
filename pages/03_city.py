@@ -1278,24 +1278,41 @@ elif menu == "地方債・基金":
             df_pref_bonds = get_comparison_df(df_bonds)
             df_pref_ov = get_comparison_df(df_overview)
             pop_col = get_population_col(df_overview)
+            
             if not df_pref_bonds.empty and pop_col:
                 comp_year_bonds_pop = st.selectbox("比較する年度を選択", df_pref_bonds['年度'].astype(str).unique(), index=len(df_pref_bonds['年度'].astype(str).unique())-1, key="comp_bonds_pop_year")
                 df_comp_b_pop = df_pref_bonds[df_pref_bonds['年度'].astype(str) == str(comp_year_bonds_pop)].copy()
+
+                # 該当年度の人口を取得（存在しない場合は最新年度の人口で自動補完）
                 df_ov_y = df_pref_ov[df_pref_ov['年度'].astype(str) == str(comp_year_bonds_pop)].copy()
-                df_ov_y['人口_num'] = pd.to_numeric(df_ov_y[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                df_comp_b_pop = df_comp_b_pop.merge(df_ov_y[['団体名', '人口_num']], on='団体名', how='left')
+                pop_dict_year = {}
+                if not df_ov_y.empty and pop_col in df_ov_y.columns:
+                    df_ov_y['人口_num'] = pd.to_numeric(df_ov_y[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
+                    pop_dict_year = df_ov_y.drop_duplicates(subset=['団体名']).set_index('団体名')['人口_num'].to_dict()
+
+                pop_dict_latest = {}
+                if not df_pref_ov.empty and pop_col in df_pref_ov.columns:
+                    df_ov_latest = df_pref_ov.sort_values('年度', key=lambda x: x.astype(str)).groupby('団体名').last().reset_index()
+                    df_ov_latest['人口_num'] = pd.to_numeric(df_ov_latest[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
+                    pop_dict_latest = df_ov_latest.set_index('団体名')['人口_num'].to_dict()
+
+                # 人口のマッピングを適用
+                df_comp_b_pop['人口_num'] = df_comp_b_pop['団体名'].map(pop_dict_year).fillna(df_comp_b_pop['団体名'].map(pop_dict_latest)).fillna(0)
                 df_comp_b_pop = df_comp_b_pop[df_comp_b_pop['人口_num'] > 0].copy()
-                
-                df_comp_b_pop['1人当たり地方債現在高'] = (df_comp_b_pop['地方債現在高_合計'] / df_comp_b_pop['人口_num']).round(2)
-                df_comp_b_pop['1人当たり積立金現在高'] = (df_comp_b_pop['積立金現在高_合計'] / df_comp_b_pop['人口_num']).round(2)
-                df_comp_b_pop = df_comp_b_pop.sort_values('1人当たり地方債現在高', ascending=False)
 
-                df_melt_cb_pc = df_comp_b_pop.melt(id_vars=['都道府県', '団体名'], value_vars=['1人当たり地方債現在高', '1人当たり積立金現在高'], var_name='項目_raw', value_name='1人当たり金額')
-                df_melt_cb_pc['項目名'] = df_melt_cb_pc['項目_raw'].apply(clean_col_label)
+                if not df_comp_b_pop.empty:
+                    df_comp_b_pop['1人当たり地方債現在高'] = (df_comp_b_pop['地方債現在高_合計'] / df_comp_b_pop['人口_num']).round(2)
+                    df_comp_b_pop['1人当たり積立金現在高'] = (df_comp_b_pop['積立金現在高_合計'] / df_comp_b_pop['人口_num']).round(2)
+                    df_comp_b_pop = df_comp_b_pop.sort_values('1人当たり地方債現在高', ascending=False)
 
-                fig_pc_b = px.bar(df_melt_cb_pc, x='団体名', y='1人当たり金額', color='項目名', title=f"{scope_label}（{comp_year_bonds_pop}年度）1人当たり地方債 vs 積立金比較", barmode='group')
-                fig_pc_b.update_layout(yaxis_tickformat=",.1f", yaxis_title="1人当たり金額（千円/人）")
-                st.plotly_chart(fig_pc_b, use_container_width=True, key="bonds_pc_comp_chart")
+                    df_melt_cb_pc = df_comp_b_pop.melt(id_vars=['都道府県', '団体名'], value_vars=['1人当たり地方債現在高', '1人当たり積立金現在高'], var_name='項目_raw', value_name='1人当たり金額')
+                    df_melt_cb_pc['項目名'] = df_melt_cb_pc['項目_raw'].apply(clean_col_label)
+
+                    fig_pc_b = px.bar(df_melt_cb_pc, x='団体名', y='1人当たり金額', color='項目名', title=f"{scope_label}（{comp_year_bonds_pop}年度）1人当たり地方債 vs 積立金比較", barmode='group')
+                    fig_pc_b.update_layout(yaxis_tickformat=",.1f", yaxis_title="1人当たり金額（千円/人）")
+                    st.plotly_chart(fig_pc_b, use_container_width=True, key="bonds_pc_comp_chart")
+                else:
+                    st.warning("表示対象の人口データまたは地方債・積立金データが存在しません。")
 
         # --- 細分化項目分析 ---
         with tab_bonds4:
