@@ -3,8 +3,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
-from utils.data_loader import load_data
 import numpy as np
+from utils.data_loader import load_data
 
 # データの呼び出し（スプレッドシートからのロード結果を取得）
 loaded_data = load_data()
@@ -14,14 +14,31 @@ else:
     df_overview, df_revenue, df_exp_nature, df_exp_purpose = loaded_data[:4]
     df_bonds = pd.DataFrame()
 
-# 地方債データの数値項目クリーニング（ハイフンやカンマの自動変換）
-if not df_bonds.empty:
-    bonds_num_cols = [c for c in df_bonds.columns if c not in ['年度', '都道府県', '都市区分', '自治体種別', '団体名']]
-    for c in bonds_num_cols:
-        df_bonds[c] = pd.to_numeric(
-            df_bonds[c].astype(str).str.replace(',', '').str.replace('-', '0'), 
-            errors='coerce'
-        ).fillna(0)
+# --- 数値クレンジング関数（マイナス記号 ▲, △, - に正しく対応） ---
+def clean_numeric_series(series):
+    """
+    ▲, △, カンマを含む文字列シリーズを正しい数値（マイナス値保持）に変換する。
+    単体のハイフン '-' や欠損表記のみの場合は 0 に置換。
+    """
+    if series is None or len(series) == 0:
+        return series
+    s = series.astype(str).str.strip()
+    # カンマの除去
+    s = s.str.replace(',', '', regex=False)
+    # ▲ や △ をマイナス記号 - に変換
+    s = s.str.replace('▲', '-', regex=False).str.replace('△', '-', regex=False)
+    # 単体のハイフン/ダッシュ類のみ（例: '-', '--', '─'）や空文字、'nan'、'None' は '0' に置換
+    s = s.replace(r'^[-\s─–—―▲△]+$', '0', regex=True)
+    s = s.replace(['nan', 'None', 'NaN', ''], '0')
+    return pd.to_numeric(s, errors='coerce').fillna(0)
+
+# 全データフレームの数値項目を一括クレンジング（マイナス値を保持）
+NON_NUMERIC_COLS = {'年度', '都道府県', '都市区分', '自治体種別', '団体名', 'コード', '備考'}
+for df_target in [df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds]:
+    if not df_target.empty:
+        num_cols_to_clean = [c for c in df_target.columns if c not in NON_NUMERIC_COLS]
+        for c in num_cols_to_clean:
+            df_target[c] = clean_numeric_series(df_target[c])
 
 st.title("🏘️ 市町村 財政分析")
 
@@ -197,9 +214,6 @@ if menu == "概要":
                         jishu_exist = [c for c in jishu_cand if c in df_rev_pref_y.columns]
                         
                         df_rev_calc = df_rev_pref_y.copy()
-                        for c in jishu_exist:
-                            df_rev_calc[c] = pd.to_numeric(df_rev_calc[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                        
                         df_rev_calc['自主財源_合計'] = df_rev_calc[jishu_exist].sum(axis=1) if jishu_exist else 0
                         all_rev_cols = [c for c in df_rev_calc.columns if c.endswith('_合計')]
                         df_rev_calc['歳入総額_calc'] = df_rev_calc[all_rev_cols].sum(axis=1) if all_rev_cols else 0
@@ -209,14 +223,10 @@ if menu == "概要":
                         df_rank = pd.merge(df_rank, df_rev_calc[rev_merge_cols], on='団体名', how='left')
 
                     pop_col = get_population_col(df_rank)
-                    df_rank['人口_num'] = pd.to_numeric(df_rank[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0) if pop_col else 0
-                    
-                    for target_c in ['地方債現在高_合計', '積立金現在高_合計', '債務負担行為額(翌年度以降支出予定額)_合計', '財政力指数', '経常収支比率', '実質公債費比率', '将来負担比率', '実質単年度収支', '地方税_合計', '自主財源_合計', '歳入総額_calc']:
-                        if target_c in df_rank.columns:
-                            df_rank[target_c] = pd.to_numeric(df_rank[target_c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce')
+                    df_rank['人口_num'] = df_rank[pop_col] if pop_col else 0
 
                     if '人口_num' in df_rank.columns and (df_rank['人口_num'] > 0).any():
-                        valid_pop = df_rank['人口_num'].replace(0, pd.NA)
+                        valid_pop = df_rank['人口_num'].replace(0, np.nan)
                         if '地方税_合計' in df_rank.columns:
                             df_rank['1人当たり地方税収入(千円)'] = (df_rank['地方税_合計'] / valid_pop).round(1)
                         if '地方債現在高_合計' in df_rank.columns:
@@ -231,7 +241,7 @@ if menu == "概要":
                             df_rank['1人当たり実質将来負担(千円)'] = (df_rank['実質将来負担残高_推計'] / valid_pop).round(1)
                     
                     if '自主財源_合計' in df_rank.columns and '歳入総額_calc' in df_rank.columns:
-                        df_rank['自主財源比率(%)'] = ((df_rank['自主財源_合計'] / df_rank['歳入総額_calc'].replace(0, pd.NA)) * 100).round(1)
+                        df_rank['自主財源比率(%)'] = ((df_rank['自主財源_合計'] / df_rank['歳入総額_calc'].replace(0, np.nan)) * 100).round(1)
 
                     def calc_score(series, is_higher_better=True):
                         s = pd.to_numeric(series, errors='coerce')
@@ -386,7 +396,6 @@ if menu == "概要":
                     idx_cols = [c for c in df_pow_y.columns if '財政力指数' in c]
                     if idx_cols:
                         pow_col = idx_cols[0]
-                        df_pow_y[pow_col] = pd.to_numeric(df_pow_y[pow_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce')
                         df_pow_sorted = df_pow_y.dropna(subset=[pow_col]).sort_values(pow_col, ascending=False).copy()
                         df_pow_sorted['表示色'] = df_pow_sorted['団体名'].apply(lambda x: '選択中の自治体' if x == selected_city else 'その他自治体')
 
@@ -421,12 +430,18 @@ if menu == "概要":
                     st.plotly_chart(fig_k, use_container_width=True, key="eff_keijo_chart")
 
             with subtab_eff2:
-                cols_scale = get_cols_by_keywords(['実質単年度収支', '単年度収支', '実質収支']) or num_cols[:3]
-                df_scale_plot = df_ov_city.copy()
-                fig1 = px.line(df_scale_plot, x='年度', y=cols_scale, markers=True, title="収支関連指標の推移（金額）")
-                fig1.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="収支均衡ライン", annotation_position="bottom right")
-                fig1.update_layout(yaxis_tickformat=",")
-                st.plotly_chart(fig1, use_container_width=True, key="eff_scale_chart")
+                # 金額ベースの収支指標のみ抽出（比率・パーセント指標を除外しマイナス赤字を表示可能に）
+                cols_scale = [
+                    c for c in df_ov_city.columns 
+                    if any(kw in c for kw in ['実質単年度収支', '単年度収支', '実質収支']) 
+                    and not any(ex in c for ex in ['比率', '%', 'パーセント', '指数'])
+                ]
+                if cols_scale:
+                    df_scale_plot = df_ov_city.copy()
+                    fig1 = px.line(df_scale_plot, x='年度', y=cols_scale, markers=True, title="収支関連指標の推移（金額：千円）")
+                    fig1.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="収支均衡ライン (0円)", annotation_position="bottom right")
+                    fig1.update_layout(yaxis_tickformat=",", yaxis_title="金額（千円）", xaxis_title="年度")
+                    st.plotly_chart(fig1, use_container_width=True, key="eff_scale_chart")
 
         # --- Tab 4: 健全性（将来のリスク・安心感） ---
         with tab4:
@@ -479,20 +494,20 @@ if menu == "概要":
                     index_cols = [c for c in df_ov_y.columns if '財政力指数' in c]
                     
                     if pop_col:
-                        df_ov_y['人口_num'] = pd.to_numeric(df_ov_y[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
+                        df_ov_y['人口_num'] = df_ov_y[pop_col]
                     if area_col:
-                        df_ov_y['面積_num'] = pd.to_numeric(df_ov_y[area_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
+                        df_ov_y['面積_num'] = df_ov_y[area_col]
                         if '人口_num' in df_ov_y.columns:
-                            valid_area = df_ov_y['面積_num'].replace(0, pd.NA)
+                            valid_area = df_ov_y['面積_num'].replace(0, np.nan)
                             df_ov_y['人口密度(人/km2)'] = (df_ov_y['人口_num'] / valid_area).round(1)
 
                     if dem_cols and '人口_num' in df_ov_y.columns:
-                        df_ov_y['基準財政需要額_num'] = pd.to_numeric(df_ov_y[dem_cols[0]].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                        valid_pop = df_ov_y['人口_num'].replace(0, pd.NA)
+                        df_ov_y['基準財政需要額_num'] = df_ov_y[dem_cols[0]]
+                        valid_pop = df_ov_y['人口_num'].replace(0, np.nan)
                         df_ov_y['1人当たり基準財政需要額(千円)'] = (df_ov_y['基準財政需要額_num'] / valid_pop).round(1)
 
                     if index_cols:
-                        df_ov_y['財政力指数_num'] = pd.to_numeric(df_ov_y[index_cols[0]].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce')
+                        df_ov_y['財政力指数_num'] = df_ov_y[index_cols[0]]
 
                     city_row = df_ov_y[df_ov_y['団体名'] == selected_city]
                     if not city_row.empty:
@@ -620,14 +635,11 @@ elif menu == "歳入":
         with tab_rev1:
             st.subheader("1. 歳入構造の時系列推移（総額 vs 人口1人当たり）")
             df_plot = df_rev_city.copy()
-            for c in main_revenue_categories:
-                df_plot[c] = pd.to_numeric(df_plot[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
             df_plot['歳入合計'] = df_plot[main_revenue_categories].sum(axis=1)
 
             pop_col = get_population_col(df_ov_city) if not df_ov_city.empty else None
             if pop_col:
-                df_pop_sub = df_ov_city[['年度', pop_col]].copy()
-                df_pop_sub['人口_num'] = pd.to_numeric(df_pop_sub[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
+                df_pop_sub = df_ov_city[['年度', pop_col]].copy().rename(columns={pop_col: '人口_num'})
                 df_plot = df_plot.merge(df_pop_sub[['年度', '人口_num']], on='年度', how='left')
 
             sub_tot, sub_pc = st.tabs(["💰 総額推移", "👥 人口1人当たり推移"])
@@ -650,9 +662,9 @@ elif menu == "歳入":
                     pc_cols = []
                     for c in main_revenue_categories:
                         pc_col_name = c + '_1人当たり'
-                        df_plot[pc_col_name] = (df_plot[c] / df_plot['人口_num']).round(2)
+                        df_plot[pc_col_name] = (df_plot[c] / df_plot['人口_num'].replace(0, np.nan)).round(2)
                         pc_cols.append(pc_col_name)
-                    df_plot['1人当たり歳入合計'] = (df_plot['歳入合計'] / df_plot['人口_num']).round(2)
+                    df_plot['1人当たり歳入合計'] = (df_plot['歳入合計'] / df_plot['人口_num'].replace(0, np.nan)).round(2)
 
                     df_melt_pc = df_plot.melt(id_vars=['年度', '1人当たり歳入合計'], value_vars=pc_cols, var_name='項目_raw', value_name='1人当たり金額')
                     df_melt_pc['項目名'] = df_melt_pc['項目_raw'].apply(clean_col_label)
@@ -672,13 +684,10 @@ elif menu == "歳入":
             st.subheader("🏛️ 自主財源の総額・比率および自治体間比較")
             if jishu_cols_exist and izon_cols_exist:
                 df_jishu_calc = df_rev_city.copy()
-                for c in jishu_cols_exist + izon_cols_exist:
-                    df_jishu_calc[c] = pd.to_numeric(df_jishu_calc[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                
                 df_jishu_calc['自主財源_合計'] = df_jishu_calc[jishu_cols_exist].sum(axis=1)
                 df_jishu_calc['依存財源_合計'] = df_jishu_calc[izon_cols_exist].sum(axis=1)
                 df_jishu_calc['歳入総額_calc'] = df_jishu_calc['自主財源_合計'] + df_jishu_calc['依存財源_合計']
-                df_jishu_calc['自主財源比率(%)'] = (df_jishu_calc['自主財源_合計'] / df_jishu_calc['歳入総額_calc'] * 100).fillna(0).round(1)
+                df_jishu_calc['自主財源比率(%)'] = (df_jishu_calc['自主財源_合計'] / df_jishu_calc['歳入総額_calc'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                 subtab_jishu1, subtab_jishu2, subtab_jishu3 = st.tabs([
                     "📈 単体推移（総額 & 比率）", 
@@ -701,15 +710,12 @@ elif menu == "歳入":
                     if not df_pref_rev.empty:
                         comp_year_j = st.selectbox("比較する年度を選択", df_pref_rev['年度'].astype(str).unique(), index=len(df_pref_rev['年度'].astype(str).unique())-1, key="comp_jishu_year")
                         df_comp_j = df_pref_rev[df_pref_rev['年度'].astype(str) == str(comp_year_j)].copy()
-                        for c in jishu_cols_exist:
-                            df_comp_j[c] = pd.to_numeric(df_comp_j[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                        
                         df_comp_j['自主財源_合計'] = df_comp_j[jishu_cols_exist].sum(axis=1)
                         df_comp_j = df_comp_j.sort_values('自主財源_合計', ascending=False)
                         
                         df_comp_j_melt = df_comp_j.melt(id_vars=['都道府県', '団体名', '自主財源_合計'], value_vars=jishu_cols_exist, var_name='項目_raw', value_name='金額')
                         df_comp_j_melt['項目名'] = df_comp_j_melt['項目_raw'].apply(clean_col_label)
-                        df_comp_j_melt['割合(%)'] = (df_comp_j_melt['金額'] / df_comp_j_melt['自主財源_合計'] * 100).fillna(0).round(1)
+                        df_comp_j_melt['割合(%)'] = (df_comp_j_melt['金額'] / df_comp_j_melt['自主財源_合計'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                         fig_comp_j_stack = px.bar(
                             df_comp_j_melt, x='団体名', y='金額', color='項目名',
@@ -729,14 +735,12 @@ elif menu == "歳入":
                         comp_year_j_pop = st.selectbox("比較する年度を選択", df_pref_rev['年度'].astype(str).unique(), index=len(df_pref_rev['年度'].astype(str).unique())-1, key="comp_jishu_pop_year")
                         df_comp_j_pop = df_pref_rev[df_pref_rev['年度'].astype(str) == str(comp_year_j_pop)].copy()
                         df_ov_y = df_pref_ov[df_pref_ov['年度'].astype(str) == str(comp_year_j_pop)].copy()
-                        df_ov_y['人口_num'] = pd.to_numeric(df_ov_y[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
                         
-                        df_comp_j_pop = df_comp_j_pop.merge(df_ov_y[['団体名', '人口_num']], on='団体名', how='left')
+                        df_comp_j_pop = df_comp_j_pop.merge(df_ov_y[['団体名', pop_col]], on='団体名', how='left').rename(columns={pop_col: '人口_num'})
                         df_comp_j_pop = df_comp_j_pop[df_comp_j_pop['人口_num'] > 0].copy()
 
                         jishu_pc_cols = []
                         for c in jishu_cols_exist:
-                            df_comp_j_pop[c] = pd.to_numeric(df_comp_j_pop[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
                             pc_col_name = c + '_1人当たり'
                             df_comp_j_pop[pc_col_name] = (df_comp_j_pop[c] / df_comp_j_pop['人口_num']).round(2)
                             jishu_pc_cols.append(pc_col_name)
@@ -746,7 +750,7 @@ elif menu == "歳入":
 
                         df_melt_j_pc = df_comp_j_pop.melt(id_vars=['都道府県', '団体名', '1人当たり自主財源合計'], value_vars=jishu_pc_cols, var_name='項目_raw', value_name='1人当たり金額')
                         df_melt_j_pc['項目名'] = df_melt_j_pc['項目_raw'].apply(clean_col_label)
-                        df_melt_j_pc['割合(%)'] = (df_melt_j_pc['1人当たり金額'] / df_melt_j_pc['1人当たり自主財源合計'] * 100).fillna(0).round(1)
+                        df_melt_j_pc['割合(%)'] = (df_melt_j_pc['1人当たり金額'] / df_melt_j_pc['1人当たり自主財源合計'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                         fig_j_pc = px.bar(
                             df_melt_j_pc, x='団体名', y='1人当たり金額', color='項目名',
@@ -771,14 +775,12 @@ elif menu == "歳入":
             if not df_pref_rev.empty:
                 comp_year_rev = st.selectbox("比較する年度を選択", df_pref_rev['年度'].astype(str).unique(), index=len(df_pref_rev['年度'].astype(str).unique())-1, key="comp_rev_year")
                 df_comp = df_pref_rev[df_pref_rev['年度'].astype(str) == str(comp_year_rev)].copy()
-                for c in main_revenue_categories:
-                    df_comp[c] = pd.to_numeric(df_comp[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
                 df_comp['歳入合計'] = df_comp[main_revenue_categories].sum(axis=1)
                 df_comp = df_comp.sort_values('歳入合計', ascending=False)
 
                 df_melt_comp = df_comp.melt(id_vars=['都道府県', '団体名', '歳入合計'], value_vars=main_revenue_categories, var_name='項目_raw', value_name='金額')
                 df_melt_comp['項目名'] = df_melt_comp['項目_raw'].apply(clean_col_label)
-                df_melt_comp['割合(%)'] = (df_melt_comp['金額'] / df_melt_comp['歳入合計'] * 100).fillna(0).round(1)
+                df_melt_comp['割合(%)'] = (df_melt_comp['金額'] / df_melt_comp['歳入合計'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                 fig_c = px.bar(
                     df_melt_comp, x='団体名', y='金額', color='項目名', 
@@ -800,14 +802,12 @@ elif menu == "歳入":
                 comp_year_rev_pop = st.selectbox("比較する年度を選択", df_pref_rev['年度'].astype(str).unique(), index=len(df_pref_rev['年度'].astype(str).unique())-1, key="comp_rev_pop_year")
                 df_comp_pop = df_pref_rev[df_pref_rev['年度'].astype(str) == str(comp_year_rev_pop)].copy()
                 df_ov_y = df_pref_ov[df_pref_ov['年度'].astype(str) == str(comp_year_rev_pop)].copy()
-                df_ov_y['人口_num'] = pd.to_numeric(df_ov_y[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
                 
-                df_comp_pop = df_comp_pop.merge(df_ov_y[['団体名', '人口_num']], on='団体名', how='left')
+                df_comp_pop = df_comp_pop.merge(df_ov_y[['団体名', pop_col]], on='団体名', how='left').rename(columns={pop_col: '人口_num'})
                 df_comp_pop = df_comp_pop[df_comp_pop['人口_num'] > 0].copy()
                 
                 pc_cols = []
                 for c in main_revenue_categories:
-                    df_comp_pop[c] = pd.to_numeric(df_comp_pop[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
                     pc_col_name = c + '_1人当たり'
                     df_comp_pop[pc_col_name] = (df_comp_pop[c] / df_comp_pop['人口_num']).round(2)
                     pc_cols.append(pc_col_name)
@@ -817,7 +817,7 @@ elif menu == "歳入":
 
                 df_melt_pc_all = df_comp_pop.melt(id_vars=['都道府県', '団体名', '1人当たり歳入合計'], value_vars=pc_cols, var_name='項目_raw', value_name='1人当たり金額')
                 df_melt_pc_all['項目名'] = df_melt_pc_all['項目_raw'].apply(clean_col_label)
-                df_melt_pc_all['割合(%)'] = (df_melt_pc_all['1人当たり金額'] / df_melt_pc_all['1人当たり歳入合計'] * 100).fillna(0).round(1)
+                df_melt_pc_all['割合(%)'] = (df_melt_pc_all['1人当たり金額'] / df_melt_pc_all['1人当たり歳入合計'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                 fig_pc = px.bar(
                     df_melt_pc_all, x='団体名', y='1人当たり金額', color='項目名',
@@ -858,19 +858,15 @@ elif menu == "歳入":
                     pop_col_pref = get_population_col(df_overview)
                     
                     if pop_col_pref and not df_pref_ov_y.empty:
-                        df_pref_ov_y['人口_num'] = pd.to_numeric(df_pref_ov_y[pop_col_pref].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                        df_pref_sub_y = df_pref_sub_y.merge(df_pref_ov_y[['団体名', '人口_num']], on='団体名', how='left')
+                        df_pref_sub_y = df_pref_sub_y.merge(df_pref_ov_y[['団体名', pop_col_pref]], on='団体名', how='left').rename(columns={pop_col_pref: '人口_num'})
                     else:
                         df_pref_sub_y['人口_num'] = 1
-
-                    for c in sub_rev_cols:
-                        df_pref_sub_y[c] = pd.to_numeric(df_pref_sub_y[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
 
                     if unit_mode == "1人当たり金額（千円/人）":
                         plot_sub_cols = []
                         for c in sub_rev_cols:
                             pc_c = c + '_1人当たり'
-                            df_pref_sub_y[pc_c] = (df_pref_sub_y[c] / df_pref_sub_y['人口_num'].replace(0, pd.NA)).round(2)
+                            df_pref_sub_y[pc_c] = (df_pref_sub_y[c] / df_pref_sub_y['人口_num'].replace(0, np.nan)).round(2)
                             plot_sub_cols.append(pc_c)
                         
                         df_pref_sub_y['内訳合計_calc'] = df_pref_sub_y[plot_sub_cols].sum(axis=1)
@@ -878,7 +874,7 @@ elif menu == "歳入":
 
                         df_melt_all_sub = df_pref_sub_y.melt(id_vars=['都道府県', '団体名', '内訳合計_calc'], value_vars=plot_sub_cols, var_name='項目_raw', value_name='数値')
                         df_melt_all_sub['内訳名'] = df_melt_all_sub['項目_raw'].apply(lambda x: sub_rev_labels.get(x.replace('_1人当たり', ''), clean_col_label(x)))
-                        df_melt_all_sub['割合(%)'] = (df_melt_all_sub['数値'] / df_melt_all_sub['内訳合計_calc'] * 100).fillna(0).round(1)
+                        df_melt_all_sub['割合(%)'] = (df_melt_all_sub['数値'] / df_melt_all_sub['内訳合計_calc'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                         fig_all_sub = px.bar(
                             df_melt_all_sub, x='団体名', y='数値', color='内訳名',
@@ -895,7 +891,7 @@ elif menu == "歳入":
 
                         df_melt_all_sub = df_pref_sub_y.melt(id_vars=['都道府県', '団体名', '内訳合計_calc'], value_vars=sub_rev_cols, var_name='項目_raw', value_name='数値')
                         df_melt_all_sub['内訳名'] = df_melt_all_sub['項目_raw'].apply(lambda x: sub_rev_labels.get(x, clean_col_label(x)))
-                        df_melt_all_sub['割合(%)'] = (df_melt_all_sub['数値'] / df_melt_all_sub['内訳合計_calc'] * 100).fillna(0).round(1)
+                        df_melt_all_sub['割合(%)'] = (df_melt_all_sub['数値'] / df_melt_all_sub['内訳合計_calc'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                         fig_all_sub = px.bar(
                             df_melt_all_sub, x='団体名', y='数値', color='内訳名',
@@ -919,13 +915,11 @@ elif menu == "歳入":
                     pop_col_pref = get_population_col(df_overview)
                     
                     if pop_col_pref and not df_pref_ov_y.empty:
-                        df_pref_ov_y['人口_num'] = pd.to_numeric(df_pref_ov_y[pop_col_pref].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                        df_pref_sub_y = df_pref_sub_y.merge(df_pref_ov_y[['団体名', '人口_num']], on='団体名', how='left')
+                        df_pref_sub_y = df_pref_sub_y.merge(df_pref_ov_y[['団体名', pop_col_pref]], on='団体名', how='left').rename(columns={pop_col_pref: '人口_num'})
                     else:
                         df_pref_sub_y['人口_num'] = 0
 
-                    df_pref_sub_y[selected_sub_item] = pd.to_numeric(df_pref_sub_y[selected_sub_item].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                    df_pref_sub_y['1人当たり金額(千円)'] = (df_pref_sub_y[selected_sub_item] / df_pref_sub_y['人口_num'].replace(0, pd.NA)).round(2)
+                    df_pref_sub_y['1人当たり金額(千円)'] = (df_pref_sub_y[selected_sub_item] / df_pref_sub_y['人口_num'].replace(0, np.nan)).round(2)
 
                     sub_rank_mode = st.radio("比較表示モード", ["1人当たり金額（千円/人）", "総額（千円）"], horizontal=True, key="sub_rev_single_mode")
                     target_rank_col = '1人当たり金額(千円)' if sub_rank_mode == "1人当たり金額（千円/人）" else selected_sub_item
@@ -965,8 +959,6 @@ elif menu == "性質別歳出":
         with tab_exp1:
             st.subheader("1. 性質別歳出の推移")
             df_plot = df_exp_city.copy()
-            for c in main_categories:
-                df_plot[c] = pd.to_numeric(df_plot[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
             df_plot['歳出合計'] = df_plot[main_categories].sum(axis=1)
 
             df_melt_e = df_plot.melt(id_vars=['年度', '歳出合計'], value_vars=main_categories, var_name='項目_raw', value_name='金額')
@@ -982,8 +974,6 @@ elif menu == "性質別歳出":
             if not df_pref_exp.empty:
                 comp_year_exp = st.selectbox("比較する年度を選択", df_pref_exp['年度'].astype(str).unique(), index=len(df_pref_exp['年度'].astype(str).unique())-1, key="comp_exp_year")
                 df_comp_e = df_pref_exp[df_pref_exp['年度'].astype(str) == str(comp_year_exp)].copy()
-                for c in main_categories:
-                    df_comp_e[c] = pd.to_numeric(df_comp_e[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
                 df_comp_e['歳出合計'] = df_comp_e[main_categories].sum(axis=1)
                 df_comp_e = df_comp_e.sort_values('歳出合計', ascending=False)
 
@@ -1003,13 +993,12 @@ elif menu == "性質別歳出":
                 comp_year_exp_pop = st.selectbox("比較する年度を選択", df_pref_exp['年度'].astype(str).unique(), index=len(df_pref_exp['年度'].astype(str).unique())-1, key="comp_exp_pop_year")
                 df_comp_e_pop = df_pref_exp[df_pref_exp['年度'].astype(str) == str(comp_year_exp_pop)].copy()
                 df_ov_y = df_pref_ov[df_pref_ov['年度'].astype(str) == str(comp_year_exp_pop)].copy()
-                df_ov_y['人口_num'] = pd.to_numeric(df_ov_y[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                df_comp_e_pop = df_comp_e_pop.merge(df_ov_y[['団体名', '人口_num']], on='団体名', how='left')
+                
+                df_comp_e_pop = df_comp_e_pop.merge(df_ov_y[['団体名', pop_col]], on='団体名', how='left').rename(columns={pop_col: '人口_num'})
                 df_comp_e_pop = df_comp_e_pop[df_comp_e_pop['人口_num'] > 0].copy()
                 
                 pc_cols_e = []
                 for c in main_categories:
-                    df_comp_e_pop[c] = pd.to_numeric(df_comp_e_pop[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
                     pc_c = c + '_1人当たり'
                     df_comp_e_pop[pc_c] = (df_comp_e_pop[c] / df_comp_e_pop['人口_num']).round(2)
                     pc_cols_e.append(pc_c)
@@ -1045,19 +1034,15 @@ elif menu == "性質別歳出":
                 pop_col_pref = get_population_col(df_overview)
                 
                 if pop_col_pref and not df_pref_ov_y.empty:
-                    df_pref_ov_y['人口_num'] = pd.to_numeric(df_pref_ov_y[pop_col_pref].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                    df_pref_sub_e_y = df_pref_sub_e_y.merge(df_pref_ov_y[['団体名', '人口_num']], on='団体名', how='left')
+                    df_pref_sub_e_y = df_pref_sub_e_y.merge(df_pref_ov_y[['団体名', pop_col_pref]], on='団体名', how='left').rename(columns={pop_col_pref: '人口_num'})
                 else:
                     df_pref_sub_e_y['人口_num'] = 1
-
-                for c in sub_exp_cols:
-                    df_pref_sub_e_y[c] = pd.to_numeric(df_pref_sub_e_y[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
 
                 if unit_mode_e == "1人当たり金額（千円/人）":
                     plot_sub_cols_e = []
                     for c in sub_exp_cols:
                         pc_c = c + '_1人当たり'
-                        df_pref_sub_e_y[pc_c] = (df_pref_sub_e_y[c] / df_pref_sub_e_y['人口_num'].replace(0, pd.NA)).round(2)
+                        df_pref_sub_e_y[pc_c] = (df_pref_sub_e_y[c] / df_pref_sub_e_y['人口_num'].replace(0, np.nan)).round(2)
                         plot_sub_cols_e.append(pc_c)
                     
                     df_pref_sub_e_y['内訳合計_calc'] = df_pref_sub_e_y[plot_sub_cols_e].sum(axis=1)
@@ -1111,8 +1096,6 @@ elif menu == "目的別歳出":
         with tab_purp1:
             st.subheader("1. 目的別歳出の推移")
             df_plot_p = df_purp_city.copy()
-            for c in main_purp_categories:
-                df_plot_p[c] = pd.to_numeric(df_plot_p[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
             df_plot_p['目的別歳出合計'] = df_plot_p[main_purp_categories].sum(axis=1)
 
             df_melt_p = df_plot_p.melt(id_vars=['年度', '目的別歳出合計'], value_vars=main_purp_categories, var_name='項目_raw', value_name='金額')
@@ -1128,8 +1111,6 @@ elif menu == "目的別歳出":
             if not df_pref_purp.empty:
                 comp_year_purp = st.selectbox("比較する年度を選択", df_pref_purp['年度'].astype(str).unique(), index=len(df_pref_purp['年度'].astype(str).unique())-1, key="comp_purp_year")
                 df_comp_p = df_pref_purp[df_pref_purp['年度'].astype(str) == str(comp_year_purp)].copy()
-                for c in main_purp_categories:
-                    df_comp_p[c] = pd.to_numeric(df_comp_p[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
                 df_comp_p['目的別歳出合計'] = df_comp_p[main_purp_categories].sum(axis=1)
                 df_comp_p = df_comp_p.sort_values('目的別歳出合計', ascending=False)
 
@@ -1149,13 +1130,12 @@ elif menu == "目的別歳出":
                 comp_year_purp_pop = st.selectbox("比較する年度を選択", df_pref_purp['年度'].astype(str).unique(), index=len(df_pref_purp['年度'].astype(str).unique())-1, key="comp_purp_pop_year")
                 df_comp_p_pop = df_pref_purp[df_pref_purp['年度'].astype(str) == str(comp_year_purp_pop)].copy()
                 df_ov_y = df_pref_ov[df_pref_ov['年度'].astype(str) == str(comp_year_purp_pop)].copy()
-                df_ov_y['人口_num'] = pd.to_numeric(df_ov_y[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                df_comp_p_pop = df_comp_p_pop.merge(df_ov_y[['団体名', '人口_num']], on='団体名', how='left')
+                
+                df_comp_p_pop = df_comp_p_pop.merge(df_ov_y[['団体名', pop_col]], on='団体名', how='left').rename(columns={pop_col: '人口_num'})
                 df_comp_p_pop = df_comp_p_pop[df_comp_p_pop['人口_num'] > 0].copy()
                 
                 pc_cols_p = []
                 for c in main_purp_categories:
-                    df_comp_p_pop[c] = pd.to_numeric(df_comp_p_pop[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
                     pc_c = c + '_1人当たり'
                     df_comp_p_pop[pc_c] = (df_comp_p_pop[c] / df_comp_p_pop['人口_num']).round(2)
                     pc_cols_p.append(pc_c)
@@ -1190,19 +1170,15 @@ elif menu == "目的別歳出":
                 pop_col_pref = get_population_col(df_overview)
                 
                 if pop_col_pref and not df_pref_ov_y.empty:
-                    df_pref_ov_y['人口_num'] = pd.to_numeric(df_pref_ov_y[pop_col_pref].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                    df_pref_sub_p_y = df_pref_sub_p_y.merge(df_pref_ov_y[['団体名', '人口_num']], on='団体名', how='left')
+                    df_pref_sub_p_y = df_pref_sub_p_y.merge(df_pref_ov_y[['団体名', pop_col_pref]], on='団体名', how='left').rename(columns={pop_col_pref: '人口_num'})
                 else:
                     df_pref_sub_p_y['人口_num'] = 1
-
-                for c in sub_purp_cols:
-                    df_pref_sub_p_y[c] = pd.to_numeric(df_pref_sub_p_y[c].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
 
                 if unit_mode_p == "1人当たり金額（千円/人）":
                     plot_sub_cols_p = []
                     for c in sub_purp_cols:
                         pc_c = c + '_1人当たり'
-                        df_pref_sub_p_y[pc_c] = (df_pref_sub_p_y[c] / df_pref_sub_p_y['人口_num'].replace(0, pd.NA)).round(2)
+                        df_pref_sub_p_y[pc_c] = (df_pref_sub_p_y[c] / df_pref_sub_p_y['人口_num'].replace(0, np.nan)).round(2)
                         plot_sub_cols_p.append(pc_c)
                     
                     df_pref_sub_p_y['内訳合計_calc'] = df_pref_sub_p_y[plot_sub_cols_p].sum(axis=1)
@@ -1285,16 +1261,12 @@ elif menu == "地方債・基金":
 
                 # 該当年度の人口を取得（存在しない場合は最新年度の人口で自動補完）
                 df_ov_y = df_pref_ov[df_pref_ov['年度'].astype(str) == str(comp_year_bonds_pop)].copy()
-                pop_dict_year = {}
-                if not df_ov_y.empty and pop_col in df_ov_y.columns:
-                    df_ov_y['人口_num'] = pd.to_numeric(df_ov_y[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                    pop_dict_year = df_ov_y.drop_duplicates(subset=['団体名']).set_index('団体名')['人口_num'].to_dict()
+                pop_dict_year = df_ov_y.drop_duplicates(subset=['団体名']).set_index('団体名')[pop_col].to_dict() if not df_ov_y.empty and pop_col in df_ov_y.columns else {}
 
                 pop_dict_latest = {}
                 if not df_pref_ov.empty and pop_col in df_pref_ov.columns:
                     df_ov_latest = df_pref_ov.sort_values('年度', key=lambda x: x.astype(str)).groupby('団体名').last().reset_index()
-                    df_ov_latest['人口_num'] = pd.to_numeric(df_ov_latest[pop_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                    pop_dict_latest = df_ov_latest.set_index('団体名')['人口_num'].to_dict()
+                    pop_dict_latest = df_ov_latest.set_index('団体名')[pop_col].to_dict()
 
                 # 人口のマッピングを適用
                 df_comp_b_pop['人口_num'] = df_comp_b_pop['団体名'].map(pop_dict_year).fillna(df_comp_b_pop['団体名'].map(pop_dict_latest)).fillna(0)
@@ -1332,13 +1304,11 @@ elif menu == "地方債・基金":
                 
                 pop_col_pref = get_population_col(df_overview)
                 if pop_col_pref and not df_pref_ov_y.empty:
-                    df_pref_ov_y['人口_num'] = pd.to_numeric(df_pref_ov_y[pop_col_pref].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                    df_pref_sub_b_y = df_pref_sub_b_y.merge(df_pref_ov_y[['団体名', '人口_num']], on='団体名', how='left')
+                    df_pref_sub_b_y = df_pref_sub_b_y.merge(df_pref_ov_y[['団体名', pop_col_pref]], on='団体名', how='left').rename(columns={pop_col_pref: '人口_num'})
                 else:
                     df_pref_sub_b_y['人口_num'] = 0
 
-                df_pref_sub_b_y[selected_bonds_col] = pd.to_numeric(df_pref_sub_b_y[selected_bonds_col].astype(str).str.replace(',', '').str.replace('-', '0'), errors='coerce').fillna(0)
-                df_pref_sub_b_y['1人当たり金額(千円)'] = (df_pref_sub_b_y[selected_bonds_col]/ df_pref_sub_b_y['人口_num'].replace(0, np.nan)).round(2)
+                df_pref_sub_b_y['1人当たり金額(千円)'] = (df_pref_sub_b_y[selected_bonds_col] / df_pref_sub_b_y['人口_num'].replace(0, np.nan)).round(2)
                 
                 sub_bonds_rank_mode = st.radio("比較表示モード", ["1人当たり金額（千円/人）", "総額（千円）"], horizontal=True, key="sub_bonds_mode")
                 target_bonds_rank_col = '1人当たり金額(千円)' if sub_bonds_rank_mode == "1人当たり金額（千円/人）" else selected_bonds_col
