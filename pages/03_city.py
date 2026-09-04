@@ -14,17 +14,17 @@ else:
     df_overview, df_revenue, df_exp_nature, df_exp_purpose = loaded_data[:4]
     df_bonds = pd.DataFrame()
 
-# --- 数値クレンジング関数（マイナス記号 ▲, △, - に正しく対応） ---
+# --- 数値クレンジング関数（▲, △, スペース, マイナス記号に対応） ---
 def clean_numeric_series(series):
     """
-    ▲, △, カンマを含む文字列シリーズを正しい数値（マイナス値保持）に変換する。
+    ▲, △, スペース, カンマを含む文字列シリーズを正しい数値（マイナス値保持）に変換する。
     単体のハイフン '-' や欠損表記のみの場合は 0 に置換。
     """
     if series is None or len(series) == 0:
         return series
     s = series.astype(str).str.strip()
-    # カンマの除去
-    s = s.str.replace(',', '', regex=False)
+    # カンマおよび全角・半角スペースの除去（「△ 167,462」等のスペース対策）
+    s = s.str.replace(',', '', regex=False).str.replace(' ', '', regex=False).str.replace(' ', '', regex=False)
     # ▲ や △ をマイナス記号 - に変換
     s = s.str.replace('▲', '-', regex=False).str.replace('△', '-', regex=False)
     # 単体のハイフン/ダッシュ類のみ（例: '-', '--', '─'）や空文字、'nan'、'None' は '0' に置換
@@ -32,7 +32,7 @@ def clean_numeric_series(series):
     s = s.replace(['nan', 'None', 'NaN', ''], '0')
     return pd.to_numeric(s, errors='coerce').fillna(0)
 
-# 全データフレームの数値項目を一括クレンジング（マイナス値を保持）
+# 全データフレームの数値項目を一括クレンジング（マイナス値を正しく保持）
 NON_NUMERIC_COLS = {'年度', '都道府県', '都市区分', '自治体種別', '団体名', 'コード', '備考'}
 for df_target in [df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds]:
     if not df_target.empty:
