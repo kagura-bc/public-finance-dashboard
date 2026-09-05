@@ -5,32 +5,30 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 # --- 高速ベクトル化クレンジング関数 ---
-def _clean_dataframe_numeric(df, exclude_cols):
-    """
-    データフレーム全体の数値列に対して、ベクトル処理で高速に「△ 43,583」などの表記を
-    マイナス数値（float）へ変換する関数
-    """
-    if df.empty:
-        return df
+def _clean_dataframe_numeric(df, exclude_cols=None):
+    if exclude_cols is None:
+        exclude_cols = ['年度', '都道府県', '都市区分', '自治体種別', '団体名']
     
-    num_cols = [c for c in df.columns if c not in exclude_cols]
-    
-    for col in num_cols:
-        if df[col].dtype == 'object':
-            s = df[col].astype(str).str.strip()
-            
-            # マイナス判定（▲, △, ▼, ▽, ∆, Δ, 括弧, ハイフン系が含まれているか）
-            is_neg = s.str.contains(r'[▲△▼▽∆Δ\-\−\–\—\‐\─]|^\s*[\(（].*[\)）]\s*$', regex=True, na=False)
-            
-            # 数字とドット以外を排除
-            clean_s = s.str.replace(r'[^0-9.]', '', regex=True)
-            
-            # 数値化（エラーは NaN にし、0.0 で埋める）
-            nums = pd.to_numeric(clean_s, errors='coerce').fillna(0.0)
-            
-            # マイナス符号を適用
-            df[col] = np.where(is_neg & (nums != 0), -nums, nums)
-            
+    df = df.copy()
+    for col in df.columns:
+        if col in exclude_cols:
+            continue
+        
+        # PyArrow文字列型によるArrowInvalidエラー回避のため、明示的にPython文字列(object/str)に変換
+        s = df[col].astype(str)
+        
+        # マイナス表記（▲, △, ( ), マイナス記号各種）の検出
+        is_neg = s.str.contains(r'[▲△▼▽∆Δ\-\−\–\—\‐\─]|^\s*[\(（].*[\)）]\s*$', regex=True, na=False)
+        
+        # 記号やカンマの除去処理
+        cleaned_s = s.str.replace(r'[▲△▼▽∆Δ,,\(（\)）\s]', '', regex=True)
+        
+        # 数値変換
+        numeric_s = pd.to_numeric(cleaned_s, errors='coerce')
+        
+        # 負の数値の適用
+        df[col] = numeric_s.where(~is_neg, -numeric_s)
+        
     return df
 
 @st.cache_data(ttl="1h")  # キャッシュ保持時間を1時間に延長
