@@ -1,40 +1,42 @@
 import re
 import pandas as pd
+import numpy as np
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-# --- マイナス記号・特殊表記対応の数値変換ヘルパー ---
-def _parse_numeric_value(val):
-    if pd.isna(val) or val is None:
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
-        
-    s = str(val).strip()
-    if not s or s in ['-', '―', 'ー', 'null', 'None', 'NaN', 'nan', '0']:
-        return 0.0
+# --- 高速ベクトル化クレンジング関数 ---
+def _clean_dataframe_numeric(df, exclude_cols):
+    """
+    データフレーム全体の数値列に対して、ベクトル処理で高速に「△ 43,583」などの表記を
+    マイナス数値（float）へ変換する関数
+    """
+    if df.empty:
+        return df
+    
+    num_cols = [c for c in df.columns if c not in exclude_cols]
+    
+    for col in num_cols:
+        if df[col].dtype == 'object':
+            s = df[col].astype(str).str.strip()
+            
+            # マイナス判定（▲, △, ▼, ▽, ∆, Δ, 括弧, ハイフン系が含まれているか）
+            is_neg = s.str.contains(r'[▲△▼▽∆Δ\-\−\–\—\‐\─]|^\s*[\(（].*[\)）]\s*$', regex=True, na=False)
+            
+            # 数字とドット以外を排除
+            clean_s = s.str.replace(r'[^0-9.]', '', regex=True)
+            
+            # 数値化（エラーは NaN にし、0.0 で埋める）
+            nums = pd.to_numeric(clean_s, errors='coerce').fillna(0.0)
+            
+            # マイナス符号を適用
+            df[col] = np.where(is_neg & (nums != 0), -nums, nums)
+            
+    return df
 
-    # マイナスを示す要素（▲, △, ▼, ▽, ∆, Δ, 括弧, 各種ハイフン・マイナス）が含まれるか判定
-    is_negative = False
-    if re.search(r'[▲△▼▽∆Δ\-\−\–\—\‐\─]|^\s*[\(（].*[\)）]\s*$', s):
-        is_negative = True
-
-    # 数字と小数点以外の文字（カンマ、スペース、記号等）を削除
-    clean_s = re.sub(r'[^0-9.]', '', s)
-    if not clean_s:
-        return 0.0
-        
-    try:
-        num = float(clean_s)
-        return -num if (is_negative and num != 0) else num
-    except:
-        return 0.0
-
-@st.cache_data(ttl="10m")
+@st.cache_data(ttl="1h")  # キャッシュ保持時間を1時間に延長
 def load_data():
     def _read_gsheet_safe(spreadsheet_url_or_id, worksheet_name=None):
         try:
-            # secrets内の private_key の \n (文字列) を実際の改行コードに自動補正
             if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
                 pk = st.secrets["connections"]["gsheets"].get("private_key", "")
                 if "\\n" in pk:
@@ -43,9 +45,9 @@ def load_data():
             conn = st.connection("gsheets", type=GSheetsConnection)
             
             if worksheet_name:
-                df = conn.read(spreadsheet=spreadsheet_url_or_id, worksheet=worksheet_name, ttl="10m")
+                df = conn.read(spreadsheet=spreadsheet_url_or_id, worksheet=worksheet_name, ttl="1h")
             else:
-                df = conn.read(spreadsheet=spreadsheet_url_or_id, ttl="10m")
+                df = conn.read(spreadsheet=spreadsheet_url_or_id, ttl="1h")
         except Exception as e:
             st.error(f"スプレッドシートの読み込みに失敗しました ({spreadsheet_url_or_id}): {e}")
             return pd.DataFrame()
@@ -56,11 +58,8 @@ def load_data():
         if '年度' in df.columns:
             df['年度'] = df['年度'].astype(str)
             
-        exclude_cols = ['年度', '都道府県', '団体名', '都市区分', '自治体種別']
-        num_cols = [c for c in df.columns if c not in exclude_cols]
-        for col in num_cols:
-            if df[col].dtype == 'object':
-                df[col] = df[col].apply(_parse_numeric_value)
+        exclude_cols = ['年度', '都道府県', '団体名', '都市区分', '自治体種別', 'コード', '備考']
+        df = _clean_dataframe_numeric(df, exclude_cols)
         return df
 
     url_overview = st.secrets["connections"]["gsheets"].get("url_overview", st.secrets["connections"]["gsheets"].get("spreadsheet"))
