@@ -4,34 +4,41 @@ import numpy as np
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-# --- 高速ベクトル化クレンジング関数 ---
+# --- 負数パターン・除去パターンの事前コンパイル（Python標準reモジュール使用） ---
+_PATTERN_NEG = re.compile(r'[▲△▼▽∆Δ\-\−\–\—\‐\─]|^\s*[\(（].*[\)）]\s*$')
+_PATTERN_CLEAN = re.compile(r'[▲△▼▽∆Δ,,\(（\)）\s\-\−\–\—\‐\─]')
+
+def _clean_single_value(val):
+    if pd.isna(val) or val is None:
+        return np.nan
+    if isinstance(val, (int, float)):
+        return float(val)
+    st_val = str(val).strip()
+    if not st_val or st_val.lower() in ('nan', 'none', '-', '▲', '△'):
+        return np.nan
+    
+    is_neg = bool(_PATTERN_NEG.search(st_val))
+    cleaned = _PATTERN_CLEAN.sub('', st_val)
+    try:
+        num = float(cleaned)
+        return -num if is_neg else num
+    except ValueError:
+        return np.nan
+
 def _clean_dataframe_numeric(df, exclude_cols=None):
     if exclude_cols is None:
-        exclude_cols = ['年度', '都道府県', '都市区分', '自治体種別', '団体名']
+        exclude_cols = ['年度', '都道府県', '都市区分', '自治体種別', '団体名', 'コード', '備考']
     
     df = df.copy()
     for col in df.columns:
         if col in exclude_cols:
             continue
-        
-        # PyArrow文字列型によるArrowInvalidエラー回避のため、標準Python文字列オブジェクトに変換
-        s = df[col].astype("object").astype(str)
-        
-        # 負数表記（▲, △, ( ), マイナス記号各種）の検出
-        is_neg = s.str.contains(r'[▲△▼▽∆Δ\-\−\–\—\‐\─]|^\s*[\(（].*[\)）]\s*$', regex=True, na=False)
-        
-        # 記号やカンマの除去
-        cleaned_s = s.str.replace(r'[▲△▼▽∆Δ,,\(（\)）\s]', '', regex=True)
-        
-        # 数値変換
-        numeric_s = pd.to_numeric(cleaned_s, errors='coerce')
-        
-        # 負の数値を適用
-        df[col] = numeric_s.where(~is_neg, -numeric_s)
+        # PyArrow/Pandas .str アクセサを経由せず、純粋なPython処理で即時変換（ArrowInvalidエラーを100%回避）
+        df[col] = [_clean_single_value(v) for v in df[col]]
         
     return df
 
-@st.cache_data(ttl="1h")  # キャッシュ保持時間を1時間に延長
+@st.cache_data(ttl="1h")
 def load_data():
     def _read_gsheet_safe(spreadsheet_url_or_id, worksheet_name=None):
         try:
