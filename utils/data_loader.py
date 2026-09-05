@@ -14,19 +14,19 @@ def _clean_dataframe_numeric(df, exclude_cols=None):
         if col in exclude_cols:
             continue
         
-        # PyArrow文字列型によるArrowInvalidエラー回避のため、明示的にPython文字列(object/str)に変換
-        s = df[col].astype(str)
+        # PyArrow文字列型によるArrowInvalidエラー回避のため、標準Python文字列オブジェクトに変換
+        s = df[col].astype("object").astype(str)
         
-        # マイナス表記（▲, △, ( ), マイナス記号各種）の検出
+        # 負数表記（▲, △, ( ), マイナス記号各種）の検出
         is_neg = s.str.contains(r'[▲△▼▽∆Δ\-\−\–\—\‐\─]|^\s*[\(（].*[\)）]\s*$', regex=True, na=False)
         
-        # 記号やカンマの除去処理
+        # 記号やカンマの除去
         cleaned_s = s.str.replace(r'[▲△▼▽∆Δ,,\(（\)）\s]', '', regex=True)
         
         # 数値変換
         numeric_s = pd.to_numeric(cleaned_s, errors='coerce')
         
-        # 負の数値の適用
+        # 負の数値を適用
         df[col] = numeric_s.where(~is_neg, -numeric_s)
         
     return df
