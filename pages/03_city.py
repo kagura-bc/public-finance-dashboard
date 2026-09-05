@@ -223,11 +223,14 @@ if menu == "概要":
                     if not df_rev_all.empty:
                         jishu_cand = ['地方税_合計', '分担金及び負担金_合計', '使用料_合計', '手数料_合計', '財産収入_合計', '寄附金_合計', '繰入金_合計', '繰越金_合計', '諸収入_合計']
                         jishu_exist = [c for c in jishu_cand if c in df_rev_all.columns]
-                        
+
+                        izon_cand = ['地方譲与税_合計', '都道府県税交付金_合計', '地方特例交付金_合計', '地方交付税_合計', '交通安全対策特別交付金', '国庫支出金_合計', '都道府県支出金_合計', '地方債_合計', '国有提供施設等所在市町村助成交付金', '特別区財政調整交付金']
+                        izon_exist = [c for c in izon_cand if c in df_rev_all.columns]
+
                         df_rev_calc = df_rev_all.copy()
                         df_rev_calc['自主財源_合計'] = df_rev_calc[jishu_exist].sum(axis=1) if jishu_exist else 0
-                        all_rev_cols = [c for c in df_rev_calc.columns if c.endswith('_合計')]
-                        df_rev_calc['歳入総額_calc'] = df_rev_calc[all_rev_cols].sum(axis=1) if all_rev_cols else 0
+                        df_rev_calc['依存財源_合計'] = df_rev_calc[izon_exist].sum(axis=1) if izon_exist else 0
+                        df_rev_calc['歳入総額_calc'] = df_rev_calc['自主財源_合計'] + df_rev_calc['依存財源_合計']
                         
                         rev_merge_cols = ['都道府県', '団体名', '地方税_合計', '自主財源_合計', '歳入総額_calc']
                         rev_merge_cols = [c for c in rev_merge_cols if c in df_rev_calc.columns]
