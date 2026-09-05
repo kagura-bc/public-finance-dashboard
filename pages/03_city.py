@@ -262,13 +262,19 @@ if menu == "概要":
                     if future_burden_cols:
                         df_rank_base['将来負担比率(%)'] = pd.to_numeric(df_rank_base[future_burden_cols[0]], errors='coerce').round(1)
 
-                    # スコア化関数
+                    # --- 修正後のスコア化関数（パーセンタイル順位方式） ---
                     def calc_score(series, is_higher_better=True):
                         s = pd.to_numeric(series, errors='coerce')
-                        min_v, max_v = s.min(), s.max()
-                        if pd.isna(min_v) or pd.isna(max_v) or max_v == min_v:
+                        valid_mask = s.notna()
+                        if valid_mask.sum() == 0:
                             return pd.Series(50.0, index=s.index)
-                        return ((s - min_v) / (max_v - min_v) * 100).round(1) if is_higher_better else ((max_v - s) / (max_v - min_v) * 100).round(1)
+                        
+                        # 全自治体の中でのパーセンタイル順位（0〜100pt）を算出
+                        # method には 'mean' ではなく 'average'（または指定なし）を設定
+                        ascending = is_higher_better
+                        ranks = s.rank(pct=True, ascending=ascending, method='average') * 100
+                        
+                        return ranks.round(1)
 
                     score_item_map = {}
                     if '財政力指数' in df_rank_base.columns:
@@ -363,7 +369,15 @@ if menu == "概要":
                                 if sc_val >= 60:
                                     strengths_list.append(f"**{m_label}**（スコア: {sc_val:.1f} pt）<br>└ {info_meta}<br>└ {str_desc}")
                                 elif sc_val < 45:
-                                    weaknesses_list.append(f"**{m_label}**（スコア: {sc_val:.1f} pt）<br>└ {info_meta}<br>└ {weak_desc}")
+                                    # 実数値が全国平均より明らかに優れている場合は課題に入れない安全ガード
+                                    is_weakness = True
+                                    if score_col in ['地域稼ぐ力スコア', '基金スコア', '財政力スコア', '自主財源スコア'] and (m_val is not None and m_avg is not None and m_val >= m_avg):
+                                        is_weakness = False
+                                    elif score_col in ['経常収支スコア', '将来負担スコア'] and (m_val is not None and m_avg is not None and m_val <= m_avg):
+                                        is_weakness = False
+                                        
+                                    if is_weakness:
+                                        weaknesses_list.append(f"**{m_label}**（スコア: {sc_val:.1f} pt）<br>└ {info_meta}<br>└ {weak_desc}")
 
                         # 1. 総合評価サマリーメッセージの決定
                         tot_score_val = c_data.get('総合ポイント', 50.0)
