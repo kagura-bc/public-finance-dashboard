@@ -14,25 +14,37 @@ else:
     df_overview, df_revenue, df_exp_nature, df_exp_purpose = loaded_data[:4]
     df_bonds = pd.DataFrame()
 
-# --- 数値クレンジング関数（▲, △, スペース, マイナス記号に対応） ---
+# --- 数値クレンジング関数（強化版） ---
 def clean_numeric_series(series):
     """
-    ▲, △, スペース, カンマを含む文字列シリーズを正しい数値（マイナス値保持）に変換する。
-    単体のハイフン '-' や欠損表記のみの場合は 0 に置換。
+    「△ 43,583」などの全角スペース・不可視文字付き表記や、各種マイナス記号を確実に数値化する関数。
     """
     if series is None or len(series) == 0:
         return series
+        
     s = series.astype(str).str.strip()
-    # カンマおよび全角・半角スペースの除去（「△ 167,462」等のスペース対策）
-    s = s.str.replace(',', '', regex=False).str.replace(' ', '', regex=False).str.replace(' ', '', regex=False)
-    # ▲ や △ をマイナス記号 - に変換
-    s = s.str.replace('▲', '-', regex=False).str.replace('△', '-', regex=False)
-    # 単体のハイフン/ダッシュ類のみ（例: '-', '--', '─'）や空文字、'nan'、'None' は '0' に置換
-    s = s.replace(r'^[-\s─–—―▲△]+$', '0', regex=True)
-    s = s.replace(['nan', 'None', 'NaN', ''], '0')
+    
+    # 1. 全角スペースやタブ・改行などの不可視文字を全て一掃
+    s = s.str.replace(r'[\u3000\xa0\t\r\n]', '', regex=True)
+    
+    # 2. △/▲やマイナス記号と数字の間のスペースを削除して結合
+    s = s.str.replace(r'([▲△▼▽－−—–‐─-])\s+', r'\1', regex=True)
+    
+    # 3. 会計用括弧 (123,456) をマイナス表記に変換
+    s = s.str.replace(r'^\s*\((.*?)\)\s*$', r'-\1', regex=True)
+    
+    # 4. 各種三角記号や全角ハイフンを半角マイナス (-) に統一
+    s = s.str.replace(r'[▲△▼▽－−—–‐─]', '-', regex=True)
+    
+    # 5. 半角マイナス、数字、ドット以外の文字（カンマや単位等）を全て削除
+    s = s.str.replace(r'[^-0-9.]', '', regex=True)
+    
+    # 6. 空文字や記号のみのデータを 0 に置換
+    s = s.replace(['', '-', '.', '-.', 'nan', 'NaN', 'None', 'null'], '0')
+    
     return pd.to_numeric(s, errors='coerce').fillna(0)
 
-# 全データフレームの数値項目を一括クレンジング（マイナス値を正しく保持）
+# 全データフレームの数値項目を一括クレンジング
 NON_NUMERIC_COLS = {'年度', '都道府県', '都市区分', '自治体種別', '団体名', 'コード', '備考'}
 for df_target in [df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds]:
     if not df_target.empty:
@@ -430,7 +442,7 @@ if menu == "概要":
                     st.plotly_chart(fig_k, use_container_width=True, key="eff_keijo_chart")
 
             with subtab_eff2:
-                # 金額ベースの収支指標のみ抽出（比率・パーセント指標を除外しマイナス赤字を表示可能に）
+                # 金額ベースの収支指標のみ抽出
                 cols_scale = [
                     c for c in df_ov_city.columns 
                     if any(kw in c for kw in ['実質単年度収支', '単年度収支', '実質収支']) 
@@ -440,7 +452,25 @@ if menu == "概要":
                     df_scale_plot = df_ov_city.copy()
                     fig1 = px.line(df_scale_plot, x='年度', y=cols_scale, markers=True, title="収支関連指標の推移（金額：千円）")
                     fig1.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="収支均衡ライン (0円)", annotation_position="bottom right")
-                    fig1.update_layout(yaxis_tickformat=",", yaxis_title="金額（千円）", xaxis_title="年度")
+                    
+                    # データの最小値・最大値を厳密に算出
+                    data_min = df_scale_plot[cols_scale].min().min()
+                    data_max = df_scale_plot[cols_scale].max().max()
+
+                    # Y軸の上下限を明示的に数値で計算して設定（Plotlyで range=[min, None] は無効化されるため）
+                    y_lower = min(-1000000, data_min * 1.2 if pd.notna(data_min) and data_min < 0 else -1000000)
+                    y_upper = max(1000000, data_max * 1.1 if pd.notna(data_max) else 1000000)
+
+                    fig1.update_yaxes(
+                        range=[y_lower, y_upper],  # 明示的な数値範囲で強制固定
+                        tickformat=",", 
+                        title="金額（千円）",
+                        zeroline=True,
+                        zerolinewidth=2,
+                        zerolinecolor='black'
+                    )
+
+                    fig1.update_layout(xaxis_title="年度")
                     st.plotly_chart(fig1, use_container_width=True, key="eff_scale_chart")
 
         # --- Tab 4: 健全性（将来のリスク・安心感） ---

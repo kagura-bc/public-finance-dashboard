@@ -1,6 +1,34 @@
+import re
 import pandas as pd
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
+
+# --- マイナス記号・特殊表記対応の数値変換ヘルパー ---
+def _parse_numeric_value(val):
+    if pd.isna(val) or val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+        
+    s = str(val).strip()
+    if not s or s in ['-', '―', 'ー', 'null', 'None', 'NaN', 'nan', '0']:
+        return 0.0
+
+    # マイナスを示す要素（▲, △, ▼, ▽, ∆, Δ, 括弧, 各種ハイフン・マイナス）が含まれるか判定
+    is_negative = False
+    if re.search(r'[▲△▼▽∆Δ\-\−\–\—\‐\─]|^\s*[\(（].*[\)）]\s*$', s):
+        is_negative = True
+
+    # 数字と小数点以外の文字（カンマ、スペース、記号等）を削除
+    clean_s = re.sub(r'[^0-9.]', '', s)
+    if not clean_s:
+        return 0.0
+        
+    try:
+        num = float(clean_s)
+        return -num if (is_negative and num != 0) else num
+    except:
+        return 0.0
 
 @st.cache_data(ttl="10m")
 def load_data():
@@ -32,10 +60,7 @@ def load_data():
         num_cols = [c for c in df.columns if c not in exclude_cols]
         for col in num_cols:
             if df[col].dtype == 'object':
-                df[col] = pd.to_numeric(
-                    df[col].astype(str).str.replace(',', '').str.replace(' ', '').str.replace('-', '0'),
-                    errors='coerce'
-                )
+                df[col] = df[col].apply(_parse_numeric_value)
         return df
 
     url_overview = st.secrets["connections"]["gsheets"].get("url_overview", st.secrets["connections"]["gsheets"].get("spreadsheet"))
