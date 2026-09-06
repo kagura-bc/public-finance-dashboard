@@ -9,7 +9,7 @@ st.set_page_config(
 
 # 各ページの定義
 page_national = st.Page("pages/01_national.py", title="国 (準備中)", icon="🇯🇵")
-page_pref = st.Page("pages/02_pref.py", title="都道府県 (準備中)", icon="🏢")
+page_pref = st.Page("pages/02_pref.py", title="都道府県", icon="🏢")
 page_city = st.Page("pages/03_city.py", title="市町村", icon="🏘️", default=True) # デフォルト表示
 
 # サイドバーのナビゲーションメニューを作成
