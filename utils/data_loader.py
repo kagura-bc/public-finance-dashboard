@@ -80,7 +80,7 @@ def load_data():
 
     return df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds
 
-# --- 都道府県用データ読み込み（新規追加） ---
+# --- 都道府県用データ読み込み ---
 @st.cache_data(ttl="1h")
 def load_pref_data():
     url_pref_overview = st.secrets["connections"]["gsheets"].get("url_pref_overview")
