@@ -100,7 +100,7 @@ selected_city = st.sidebar.selectbox("市町村・町村を選択", city_list, i
 
 menu = st.sidebar.radio("表示メニュー", ["概要", "歳入", "性質別歳出", "目的別歳出", "地方債・基金"])
 
-# --- フィルター処理関数（列名自動認識・曖昧一致対応版） ---
+# --- フィルター処理関数 ---
 def filter_by_city(df, pref, city):
     if df.empty:
         return df
@@ -156,7 +156,7 @@ def get_population_col(df):
             return matched[0]
     return pop_cols[0]
 
-# --- 人口取得用ヘルパー関数（KeyError防止対策済み） ---
+# --- 人口取得用ヘルパー関数 ---
 def get_population_series(df_target, df_ov, target_year="latest"):
     pop_col = get_population_col(df_ov)
     if not pop_col or df_ov.empty or df_target.empty:
@@ -211,6 +211,73 @@ def get_population_series(df_target, df_ov, target_year="latest"):
 
     pop_series = s_row.fillna(s_year).fillna(s_latest)
     return pd.to_numeric(pop_series, errors='coerce')
+
+# --- トップ・ワースト一覧用ヘルパー関数 ---
+def create_top_worst_summary_df(df_target, df_overview, items_list, selected_pref, selected_type, selected_city, selected_year, clean_name_fn):
+    res = df_target.copy()
+    if selected_type != "すべて" and '都市区分' in res.columns:
+        res = res[res['都市区分'].astype(str).str.strip() == str(selected_type).strip()]
+    if selected_pref != "全国" and '都道府県' in res.columns:
+        res = res[res['都道府県'].astype(str).str.strip() == str(selected_pref).strip()]
+    
+    df_y = res[res['年度'].astype(str) == str(selected_year)].copy()
+    if df_y.empty:
+        return pd.DataFrame()
+
+    c_city_col = '団体名' if '団体名' in df_y.columns else ('市町村名' if '市町村名' in df_y.columns else df_y.columns[0])
+    c_pref_col = '都道府県' if '都道府県' in df_y.columns else '都道府県名'
+    group_cols = [c for c in [c_pref_col, c_city_col] if c in df_y.columns]
+
+    df_grouped = df_y.groupby(group_cols, as_index=False)[items_list].sum()
+    df_grouped['人口_num'] = get_population_series(df_grouped, df_overview, selected_year)
+    df_valid = df_grouped[df_grouped['人口_num'] > 0].copy()
+    
+    if df_valid.empty:
+        return pd.DataFrame()
+
+    clean_sel_city = str(selected_city).strip()
+    total_cities = len(df_valid)
+
+    rows = []
+    for item_col in items_list:
+        if item_col not in df_valid.columns:
+            continue
+        
+        display_name = clean_name_fn(item_col)
+        
+        val_s = pd.to_numeric(df_valid[item_col], errors='coerce').fillna(0)
+        pop_s = pd.to_numeric(df_valid['人口_num'], errors='coerce')
+        pc_s = (val_s / pop_s).round(1)
+        
+        df_valid_item = df_valid.copy()
+        df_valid_item['pc_val'] = pc_s
+        df_valid_item['順位'] = df_valid_item['pc_val'].rank(ascending=False, method='min').astype(int)
+        
+        avg_val = pc_s.mean()
+        
+        top_row = df_valid_item.sort_values('pc_val', ascending=False).iloc[0]
+        top_str = f"🥇 {top_row[c_city_col]} ({top_row['pc_val']:,.1f} 千円)"
+        
+        worst_row = df_valid_item.sort_values('pc_val', ascending=True).iloc[0]
+        worst_str = f"⚓ {worst_row[c_city_col]} ({worst_row['pc_val']:,.1f} 千円)"
+        
+        sel_row = df_valid_item[df_valid_item[c_city_col].astype(str).str.contains(clean_sel_city, regex=False)]
+        if not sel_row.empty:
+            s_val = sel_row.iloc[0]['pc_val']
+            s_rk = int(sel_row.iloc[0]['順位'])
+            sel_str = f"{s_val:,.1f} 千円 ({s_rk}位/{total_cities})"
+        else:
+            sel_str = "-"
+
+        rows.append({
+            '項目名': display_name,
+            f'{selected_city} (1人当たり)': sel_str,
+            '地域平均 (千円/人)': f"{avg_val:,.1f}",
+            'トップ自治体': top_str,
+            'ワースト自治体': worst_str
+        })
+        
+    return pd.DataFrame(rows)
 
 # 選択された自治体のデータを抽出
 df_ov_city = filter_by_city(df_overview, selected_pref, selected_city)
@@ -1142,7 +1209,7 @@ elif menu == "歳入":
 # ==========================================
 elif menu == "性質別歳出":
     st.markdown("### 性質別歳出の推移と分析")
-    if not df_exp_city.empty:
+    if not df_exp_nature.empty:
         main_categories = [
             '人件費_合計', '物件費_合計', '維持補修費_合計', '扶助費_合計', '補助費等_合計', 
             '普通建設事業費_合計', '災害復旧事業費_合計', '失業対策事業費_合計', 
@@ -1151,87 +1218,95 @@ elif menu == "性質別歳出":
         main_categories = [c for c in main_categories if c in df_exp_nature.columns]
         exp_category_order = [clean_col_label(c) for c in main_categories]
 
-        tab_exp1, tab_exp2, tab_exp3, tab_exp4 = st.tabs([
+        tab_exp1, tab_exp2, tab_exp3, tab_exp4, tab_exp5, tab_exp6 = st.tabs([
             "📈 自治体単体分析", 
             "📊 自治体間比較（総額）", 
             "👥 自治体間比較（1人当たり）",
-            "🔍 細分化項目比較（内訳一括・個別）"
+            "🔍 細分化項目比較（内訳一括・個別）",
+            "🏆 項目別ランキング・自治体力点分析",
+            "👑 1人当たり県内トップ・ワースト一覧"
         ])
 
         with tab_exp1:
             st.subheader("1. 性質別歳出の時系列推移（総額 vs 人口1人当たり）")
             
             group_cols_e = [c for c in ['都道府県', '団体名', '年度'] if c in df_exp_city.columns]
-            df_plot_base = df_exp_city.groupby(group_cols_e, as_index=False)[main_categories].sum()
-            df_plot_base['歳出合計'] = df_plot_base[main_categories].sum(axis=1)
-            df_plot_base['人口_num'] = get_population_series(df_plot_base, df_overview, "latest")
+            if not df_exp_city.empty:
+                df_plot_base = df_exp_city.groupby(group_cols_e, as_index=False)[main_categories].sum()
+                df_plot_base['歳出合計'] = df_plot_base[main_categories].sum(axis=1)
+                df_plot_base['人口_num'] = get_population_series(df_plot_base, df_overview, "latest")
 
-            sub_exp_tot, sub_exp_pc = st.tabs(["💰 総額推移", "👥 人口1人当たり推移"])
-            with sub_exp_tot:
-                df_melt_e = df_plot_base.melt(id_vars=['年度'], value_vars=main_categories, var_name='項目_raw', value_name='金額')
-                df_melt_e['項目名'] = df_melt_e['項目_raw'].apply(clean_col_label)
-                df_melt_e = df_melt_e.groupby(['年度', '項目名'], as_index=False)['金額'].sum()
-                
-                year_totals = df_melt_e.groupby('年度')['金額'].transform('sum')
-                df_melt_e['歳出合計'] = year_totals
-                df_melt_e['割合(%)'] = (df_melt_e['金額'] / df_melt_e['歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
-
-                fig_exp = px.bar(
-                    df_melt_e, x='年度', y='金額', color='項目名', 
-                    title=f"{selected_city} 性質別歳出の推移（総額）", barmode='stack',
-                    custom_data=['項目名', '割合(%)'],
-                    category_orders={"項目名": exp_category_order}
-                )
-                fig_exp.update_layout(yaxis_tickformat=",", yaxis_title="金額（千円）")
-                fig_exp.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>金額: %{y:,.0f} 千円<br>構成比: %{customdata[1]}%<extra></extra>")
-                st.plotly_chart(fig_exp, use_container_width=True, key="exp_nature_trend")
-
-            with sub_exp_pc:
-                if '人口_num' in df_plot_base.columns and (df_plot_base['人口_num'] > 0).any():
-                    df_pc_base = df_plot_base.copy()
-                    pc_cols_e = []
-                    for c in main_categories:
-                        pc_col_name = c + '_1人当たり'
-                        df_pc_base[pc_col_name] = (df_pc_base[c] / df_pc_base['人口_num'].replace(0, np.nan)).round(2)
-                        pc_cols_e.append(pc_col_name)
-
-                    df_melt_e_pc = df_pc_base.melt(id_vars=['年度'], value_vars=pc_cols_e, var_name='項目_raw', value_name='1人当たり金額')
-                    df_melt_e_pc['項目名'] = df_melt_e_pc['項目_raw'].apply(lambda x: clean_col_label(x.replace('_1人当たり', '')))
-                    df_melt_e_pc = df_melt_e_pc.groupby(['年度', '項目名'], as_index=False)['1人当たり金額'].sum()
+                sub_exp_tot, sub_exp_pc = st.tabs(["💰 総額推移", "👥 人口1人当たり推移"])
+                with sub_exp_tot:
+                    df_melt_e = df_plot_base.melt(id_vars=['年度'], value_vars=main_categories, var_name='項目_raw', value_name='金額')
+                    df_melt_e['項目名'] = df_melt_e['項目_raw'].apply(clean_col_label)
+                    df_melt_e = df_melt_e.groupby(['年度', '項目名'], as_index=False)['金額'].sum()
                     
-                    pc_year_totals = df_melt_e_pc.groupby('年度')['1人当たり金額'].transform('sum')
-                    df_melt_e_pc['1人当たり歳出合計'] = pc_year_totals
-                    df_melt_e_pc['割合(%)'] = (df_melt_e_pc['1人当たり金額'] / df_melt_e_pc['1人当たり歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
+                    year_totals = df_melt_e.groupby('年度')['金額'].transform('sum')
+                    df_melt_e['歳出合計'] = year_totals
+                    df_melt_e['割合(%)'] = (df_melt_e['金額'] / df_melt_e['歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
 
-                    fig_exp_pc = px.bar(
-                        df_melt_e_pc, x='年度', y='1人当たり金額', color='項目名', 
-                        title=f"{selected_city} 性質別歳出の推移（1人当たり）", barmode='stack',
+                    fig_exp = px.bar(
+                        df_melt_e, x='年度', y='金額', color='項目名', 
+                        title=f"{selected_city} 性質別歳出の推移（総額）", barmode='stack',
                         custom_data=['項目名', '割合(%)'],
                         category_orders={"項目名": exp_category_order}
                     )
-                    fig_exp_pc.update_layout(yaxis_tickformat=",.1f", yaxis_title="1人当たり金額（千円/人）")
-                    fig_exp_pc.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>1人当たり金額: %{y:,.2f} 千円/人<br>構成比: %{customdata[1]}%<extra></extra>")
-                    st.plotly_chart(fig_exp_pc, use_container_width=True, key="exp_nature_pc_trend")
+                    fig_exp.update_layout(yaxis_tickformat=",", yaxis_title="金額（千円）")
+                    fig_exp.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>金額: %{y:,.0f} 千円<br>構成比: %{customdata[1]}%<extra></extra>")
+                    st.plotly_chart(fig_exp, use_container_width=True, key="exp_nature_trend")
+
+                with sub_exp_pc:
+                    if '人口_num' in df_plot_base.columns and (df_plot_base['人口_num'] > 0).any():
+                        df_pc_base = df_plot_base.copy()
+                        pc_cols_e = []
+                        for c in main_categories:
+                            pc_col_name = c + '_1人当たり'
+                            df_pc_base[pc_col_name] = (df_pc_base[c] / df_pc_base['人口_num'].replace(0, np.nan)).round(2)
+                            pc_cols_e.append(pc_col_name)
+
+                        df_melt_e_pc = df_pc_base.melt(id_vars=['年度'], value_vars=pc_cols_e, var_name='項目_raw', value_name='1人当たり金額')
+                        df_melt_e_pc['項目名'] = df_melt_e_pc['項目_raw'].apply(lambda x: clean_col_label(x.replace('_1人当たり', '')))
+                        df_melt_e_pc = df_melt_e_pc.groupby(['年度', '項目名'], as_index=False)['1人当たり金額'].sum()
+                        
+                        pc_year_totals = df_melt_e_pc.groupby('年度')['1人当たり金額'].transform('sum')
+                        df_melt_e_pc['1人当たり歳出合計'] = pc_year_totals
+                        df_melt_e_pc['割合(%)'] = (df_melt_e_pc['1人当たり金額'] / df_melt_e_pc['1人当たり歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
+
+                        fig_exp_pc = px.bar(
+                            df_melt_e_pc, x='年度', y='1人当たり金額', color='項目名', 
+                            title=f"{selected_city} 性質別歳出の推移（1人当たり）", barmode='stack',
+                            custom_data=['項目名', '割合(%)'],
+                            category_orders={"項目名": exp_category_order}
+                        )
+                        fig_exp_pc.update_layout(yaxis_tickformat=",.1f", yaxis_title="1人当たり金額（千円/人）")
+                        fig_exp_pc.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>1人当たり金額: %{y:,.2f} 千円/人<br>構成比: %{customdata[1]}%<extra></extra>")
+                        st.plotly_chart(fig_exp_pc, use_container_width=True, key="exp_nature_pc_trend")
 
         with tab_exp2:
             st.subheader(f"{scope_label} 性質別歳出比較（総額）")
             df_pref_exp = get_comparison_df(df_exp_nature)
             if not df_pref_exp.empty:
                 comp_year_exp = st.selectbox("比較する年度を選択", df_pref_exp['年度'].astype(str).unique(), index=len(df_pref_exp['年度'].astype(str).unique())-1, key="comp_exp_year")
-                df_comp_e = df_pref_exp[df_pref_exp['年度'].astype(str) == str(comp_year_exp)].groupby(['都道府県', '団体名'], as_index=False)[main_categories].sum()
+                c_city_col = '団体名' if '団体名' in df_pref_exp.columns else ('市町村名' if '市町村名' in df_pref_exp.columns else df_pref_exp.columns[0])
+                c_pref_col = '都道府県' if '都道府県' in df_pref_exp.columns else '都道府県名'
+                group_c_cols_e = [c for c in [c_pref_col, c_city_col] if c in df_pref_exp.columns]
+
+                df_comp_e = df_pref_exp[df_pref_exp['年度'].astype(str) == str(comp_year_exp)].groupby(group_c_cols_e, as_index=False)[main_categories].sum()
                 df_comp_e['歳出合計'] = df_comp_e[main_categories].sum(axis=1)
                 df_comp_e = df_comp_e.sort_values('歳出合計', ascending=False)
+                sorted_cities_exp = df_comp_e[c_city_col].tolist()
 
-                df_melt_ce = df_comp_e.melt(id_vars=['都道府県', '団体名', '歳出合計'], value_vars=main_categories, var_name='項目_raw', value_name='金額')
+                df_melt_ce = df_comp_e.melt(id_vars=group_c_cols_e + ['歳出合計'], value_vars=main_categories, var_name='項目_raw', value_name='金額')
                 df_melt_ce['項目名'] = df_melt_ce['項目_raw'].apply(clean_col_label)
-                df_melt_ce = df_melt_ce.groupby(['都道府県', '団体名', '歳出合計', '項目名'], as_index=False)['金額'].sum()
+                df_melt_ce = df_melt_ce.groupby(group_c_cols_e + ['歳出合計', '項目名'], as_index=False)['金額'].sum()
                 df_melt_ce['割合(%)'] = (df_melt_ce['金額'] / df_melt_ce['歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                 fig_ce = px.bar(
-                    df_melt_ce, x='団体名', y='金額', color='項目名', 
+                    df_melt_ce, x=c_city_col, y='金額', color='項目名', 
                     title=f"{scope_label}（{comp_year_exp}年度）性質別歳出比較（総額・大きい順）", barmode='stack',
-                    custom_data=['都道府県', '項目名', '割合(%)'],
-                    category_orders={"項目名": exp_category_order}
+                    custom_data=[c_pref_col if c_pref_col in df_melt_ce.columns else c_city_col, '項目名', '割合(%)'],
+                    category_orders={"項目名": exp_category_order, c_city_col: sorted_cities_exp}
                 )
                 fig_ce.update_layout(yaxis_tickformat=",", xaxis_title="自治体名", yaxis_title="金額（千円）")
                 fig_ce.update_traces(hovertemplate="都道府県: %{customdata[0]}<br><b>自治体: %{x}</b><br>項目名: %{customdata[1]}<br>金額: %{y:,.0f} 千円<br>構成比: %{customdata[2]}%<extra></extra>")
@@ -1242,7 +1317,11 @@ elif menu == "性質別歳出":
             df_pref_exp = get_comparison_df(df_exp_nature)
             if not df_pref_exp.empty:
                 comp_year_exp_pop = st.selectbox("比較する年度を選択", df_pref_exp['年度'].astype(str).unique(), index=len(df_pref_exp['年度'].astype(str).unique())-1, key="comp_exp_pop_year")
-                df_comp_e_pop = df_pref_exp[df_pref_exp['年度'].astype(str) == str(comp_year_exp_pop)].groupby(['都道府県', '団体名'], as_index=False)[main_categories].sum()
+                c_city_col = '団体名' if '団体名' in df_pref_exp.columns else ('市町村名' if '市町村名' in df_pref_exp.columns else df_pref_exp.columns[0])
+                c_pref_col = '都道府県' if '都道府県' in df_pref_exp.columns else '都道府県名'
+                group_c_cols_e = [c for c in [c_pref_col, c_city_col] if c in df_pref_exp.columns]
+
+                df_comp_e_pop = df_pref_exp[df_pref_exp['年度'].astype(str) == str(comp_year_exp_pop)].groupby(group_c_cols_e, as_index=False)[main_categories].sum()
                 
                 df_comp_e_pop['人口_num'] = get_population_series(df_comp_e_pop, df_overview, comp_year_exp_pop)
                 df_comp_e_pop = df_comp_e_pop[df_comp_e_pop['人口_num'] > 0].copy()
@@ -1255,17 +1334,18 @@ elif menu == "性質別歳出":
 
                 df_comp_e_pop['1人当たり歳出合計'] = df_comp_e_pop[pc_cols_e].sum(axis=1)
                 df_comp_e_pop = df_comp_e_pop.sort_values('1人当たり歳出合計', ascending=False)
+                sorted_cities_exp_pop = df_comp_e_pop[c_city_col].tolist()
 
-                df_melt_ce_pc = df_comp_e_pop.melt(id_vars=['都道府県', '団体名', '1人当たり歳出合計'], value_vars=pc_cols_e, var_name='項目_raw', value_name='1人当たり金額')
+                df_melt_ce_pc = df_comp_e_pop.melt(id_vars=group_c_cols_e + ['1人当たり歳出合計'], value_vars=pc_cols_e, var_name='項目_raw', value_name='1人当たり金額')
                 df_melt_ce_pc['項目名'] = df_melt_ce_pc['項目_raw'].apply(lambda x: clean_col_label(x.replace('_1人当たり', '')))
-                df_melt_ce_pc = df_melt_ce_pc.groupby(['都道府県', '団体名', '1人当たり歳出合計', '項目名'], as_index=False)['1人当たり金額'].sum()
+                df_melt_ce_pc = df_melt_ce_pc.groupby(group_c_cols_e + ['1人当たり歳出合計', '項目名'], as_index=False)['1人当たり金額'].sum()
                 df_melt_ce_pc['割合(%)'] = (df_melt_ce_pc['1人当たり金額'] / df_melt_ce_pc['1人当たり歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                 fig_pc_e = px.bar(
-                    df_melt_ce_pc, x='団体名', y='1人当たり金額', color='項目名', 
+                    df_melt_ce_pc, x=c_city_col, y='1人当たり金額', color='項目名', 
                     title=f"{scope_label}（{comp_year_exp_pop}年度）自治体別 1人当たり性質別歳出比較（大きい順）", barmode='stack',
-                    custom_data=['都道府県', '項目名', '割合(%)'],
-                    category_orders={"項目名": exp_category_order}
+                    custom_data=[c_pref_col if c_pref_col in df_melt_ce_pc.columns else c_city_col, '項目名', '割合(%)'],
+                    category_orders={"項目名": exp_category_order, c_city_col: sorted_cities_exp_pop}
                 )
                 fig_pc_e.update_layout(yaxis_tickformat=",.1f", xaxis_title="自治体名", yaxis_title="1人当たり金額（千円/人）")
                 fig_pc_e.update_traces(hovertemplate="都道府県: %{customdata[0]}<br><b>自治体: %{x}</b><br>項目名: %{customdata[1]}<br>1人当たり金額: %{y:,.2f} 千円/人<br>構成比: %{customdata[2]}%<extra></extra>")
@@ -1284,12 +1364,16 @@ elif menu == "性質別歳出":
                 sub_exp_labels = {c: c.replace(prefix_exp, '') for c in sub_exp_cols}
                 sub_exp_mode1, sub_exp_mode2 = st.tabs(["📊 傘下全項目の一括自治体比較", "🔍 特定の細分化項目の個別比較"])
 
+                c_city_col = '団体名' if '団体名' in df_pref_exp.columns else ('市町村名' if '市町村名' in df_pref_exp.columns else df_pref_exp.columns[0])
+                c_pref_col = '都道府県' if '都道府県' in df_pref_exp.columns else '都道府県名'
+                group_c_cols_e = [c for c in [c_pref_col, c_city_col] if c in df_pref_exp.columns]
+
                 with sub_exp_mode1:
                     avail_sub_exp_years = df_pref_exp['年度'].astype(str).unique()
                     selected_sub_exp_year = st.selectbox("比較年度を選択", avail_sub_exp_years, index=len(avail_sub_exp_years)-1, key="sub_exp_year_select")
                     unit_mode_e = st.radio("表示単位", ["1人当たり金額（千円/人）", "総額（千円）"], horizontal=True, key="unit_exp_sub")
 
-                    df_pref_sub_e_y = df_pref_exp[df_pref_exp['年度'].astype(str) == str(selected_sub_exp_year)].groupby(['都道府県', '団体名'], as_index=False)[sub_exp_cols].sum()
+                    df_pref_sub_e_y = df_pref_exp[df_pref_exp['年度'].astype(str) == str(selected_sub_exp_year)].groupby(group_c_cols_e, as_index=False)[sub_exp_cols].sum()
                     df_pref_sub_e_y['人口_num'] = get_population_series(df_pref_sub_e_y, df_overview, selected_sub_exp_year)
 
                     if unit_mode_e == "1人当たり金額（千円/人）":
@@ -1303,16 +1387,18 @@ elif menu == "性質別歳出":
                         
                         df_pref_sub_e_y['内訳合計_calc'] = df_pref_sub_e_y[plot_sub_cols_e].sum(axis=1)
                         df_pref_sub_e_y = df_pref_sub_e_y.sort_values('内訳合計_calc', ascending=False)
+                        sorted_cities_exp_sub1 = df_pref_sub_e_y[c_city_col].tolist()
 
-                        df_melt_all_sub_e = df_pref_sub_e_y.melt(id_vars=['都道府県', '団体名', '内訳合計_calc'], value_vars=plot_sub_cols_e, var_name='項目_raw', value_name='数値')
+                        df_melt_all_sub_e = df_pref_sub_e_y.melt(id_vars=group_c_cols_e + ['内訳合計_calc'], value_vars=plot_sub_cols_e, var_name='項目_raw', value_name='数値')
                         df_melt_all_sub_e['内訳名'] = df_melt_all_sub_e['項目_raw'].apply(lambda x: sub_exp_labels.get(x.replace('_1人当たり', ''), clean_col_label(x)))
-                        df_melt_all_sub_e = df_melt_all_sub_e.groupby(['都道府県', '団体名', '内訳合計_calc', '内訳名'], as_index=False)['数値'].sum()
+                        df_melt_all_sub_e = df_melt_all_sub_e.groupby(group_c_cols_e + ['内訳合計_calc', '内訳名'], as_index=False)['数値'].sum()
                         df_melt_all_sub_e['割合(%)'] = (df_melt_all_sub_e['数値'] / df_melt_all_sub_e['内訳合計_calc'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                         fig_all_sub_e = px.bar(
-                            df_melt_all_sub_e, x='団体名', y='数値', color='内訳名',
+                            df_melt_all_sub_e, x=c_city_col, y='数値', color='内訳名',
                             title=f"{scope_label}（{selected_sub_exp_year}年度）{exp_parent_options[selected_exp_parent]} 内訳一括比較（1人当たり）",
-                            barmode='stack', custom_data=['都道府県', '内訳名', '割合(%)']
+                            barmode='stack', custom_data=[c_pref_col if c_pref_col in df_melt_all_sub_e.columns else c_city_col, '内訳名', '割合(%)'],
+                            category_orders={c_city_col: sorted_cities_exp_sub1}
                         )
                         fig_all_sub_e.update_layout(yaxis_tickformat=",.1f", xaxis_title="自治体名", yaxis_title="1人当たり金額（千円/人）")
                         fig_all_sub_e.update_traces(hovertemplate="都道府県: %{customdata[0]}<br><b>自治体: %{x}</b><br>内訳: %{customdata[1]}<br>1人当たり: %{y:,.2f} 千円/人<br>構成比: %{customdata[2]}%<extra></extra>")
@@ -1320,16 +1406,18 @@ elif menu == "性質別歳出":
                     else:
                         df_pref_sub_e_y['内訳合計_calc'] = df_pref_sub_e_y[sub_exp_cols].sum(axis=1)
                         df_pref_sub_e_y = df_pref_sub_e_y.sort_values('内訳合計_calc', ascending=False)
+                        sorted_cities_exp_sub2 = df_pref_sub_e_y[c_city_col].tolist()
 
-                        df_melt_all_sub_e = df_pref_sub_e_y.melt(id_vars=['都道府県', '団体名', '内訳合計_calc'], value_vars=sub_exp_cols, var_name='項目_raw', value_name='数値')
+                        df_melt_all_sub_e = df_pref_sub_e_y.melt(id_vars=group_c_cols_e + ['内訳合計_calc'], value_vars=sub_exp_cols, var_name='項目_raw', value_name='数値')
                         df_melt_all_sub_e['内訳名'] = df_melt_all_sub_e['項目_raw'].apply(lambda x: sub_exp_labels.get(x, clean_col_label(x)))
-                        df_melt_all_sub_e = df_melt_all_sub_e.groupby(['都道府県', '団体名', '内訳合計_calc', '内訳名'], as_index=False)['数値'].sum()
+                        df_melt_all_sub_e = df_melt_all_sub_e.groupby(group_c_cols_e + ['内訳合計_calc', '内訳名'], as_index=False)['数値'].sum()
                         df_melt_all_sub_e['割合(%)'] = (df_melt_all_sub_e['数値'] / df_melt_all_sub_e['内訳合計_calc'].replace(0, np.nan) * 100).fillna(0).round(1)
 
                         fig_all_sub_e = px.bar(
-                            df_melt_all_sub_e, x='団体名', y='数値', color='内訳名',
+                            df_melt_all_sub_e, x=c_city_col, y='数値', color='内訳名',
                             title=f"{scope_label}（{selected_sub_exp_year}年度）{exp_parent_options[selected_exp_parent]} 内訳一括比較（総額）",
-                            barmode='stack', custom_data=['都道府県', '内訳名', '割合(%)']
+                            barmode='stack', custom_data=[c_pref_col if c_pref_col in df_melt_all_sub_e.columns else c_city_col, '内訳名', '割合(%)'],
+                            category_orders={c_city_col: sorted_cities_exp_sub2}
                         )
                         fig_all_sub_e.update_layout(yaxis_tickformat=",", xaxis_title="自治体名", yaxis_title="金額（千円）")
                         fig_all_sub_e.update_traces(hovertemplate="都道府県: %{customdata[0]}<br><b>自治体: %{x}</b><br>内訳: %{customdata[1]}<br>金額: %{y:,.0f} 千円<br>構成比: %{customdata[2]}%<extra></extra>")
@@ -1342,7 +1430,7 @@ elif menu == "性質別歳出":
                     avail_sub_exp_years = df_pref_exp['年度'].astype(str).unique()
                     selected_sub_exp_year_single = st.selectbox("比較年度を選択", avail_sub_exp_years, index=len(avail_sub_exp_years)-1, key="single_sub_exp_year")
 
-                    df_pref_sub_e_y = df_pref_exp[df_pref_exp['年度'].astype(str) == str(selected_sub_exp_year_single)].groupby(['都道府県', '団体名'], as_index=False)[selected_sub_exp_item].sum()
+                    df_pref_sub_e_y = df_pref_exp[df_pref_exp['年度'].astype(str) == str(selected_sub_exp_year_single)].groupby(group_c_cols_e, as_index=False)[selected_sub_exp_item].sum()
                     df_pref_sub_e_y['人口_num'] = get_population_series(df_pref_sub_e_y, df_overview, selected_sub_exp_year_single)
 
                     val_s = pd.to_numeric(df_pref_sub_e_y[selected_sub_exp_item], errors='coerce').fillna(0)
@@ -1353,18 +1441,117 @@ elif menu == "性質別歳出":
                     target_rank_col_e = '1人当たり金額(千円)' if sub_exp_rank_mode == "1人当たり金額（千円/人）" else selected_sub_exp_item
 
                     df_rank_sub_e = df_pref_sub_e_y.sort_values(target_rank_col_e, ascending=False).copy()
-                    df_rank_sub_e['表示色'] = df_rank_sub_e['団体名'].apply(lambda x: '選択中の自治体' if x == selected_city else 'その他自治体')
+                    clean_selected_city = str(selected_city).strip()
+                    df_rank_sub_e['表示色'] = df_rank_sub_e[c_city_col].apply(lambda x: '選択中の自治体' if clean_selected_city in str(x) else 'その他自治体')
 
                     fig_sub_exp_rank = px.bar(
-                        df_rank_sub_e, x='団体名', y=target_rank_col_e, color='表示色', text=target_rank_col_e,
+                        df_rank_sub_e, x=c_city_col, y=target_rank_col_e, color='表示色', text=target_rank_col_e,
                         title=f"{scope_label}（{selected_sub_exp_year_single}年度）{sub_exp_item_name} {sub_exp_rank_mode} 比較",
                         color_discrete_map={'選択中の自治体': '#FF4B4B', 'その他自治体': '#1F77B4'},
-                        custom_data=['都道府県', selected_sub_exp_item]
+                        custom_data=[c_pref_col if c_pref_col in df_rank_sub_e.columns else c_city_col, selected_sub_exp_item]
                     )
                     fig_sub_exp_rank.update_traces(texttemplate='%{text:,.1f}', textposition='outside', hovertemplate="都道府県: %{customdata[0]}<br><b>自治体: %{x}</b><br>数値: %{y:,.2f}<br>総額: %{customdata[1]:,.0f} 千円<extra></extra>")
                     st.plotly_chart(fig_sub_exp_rank, use_container_width=True, key="exp_sub2_single_chart")
-    else:
-        st.warning("選択された自治体の性質別歳出データが見つかりませんでした。")
+
+        with tab_exp5:
+            st.subheader("🏆 全項目一括可視化 & 自治体力点分析（性質別）")
+            st.markdown("全支出項目における各自治体の支出特化度（地域平均を1.0とした場合の倍率）を1ページにまとめて可視化しています。")
+
+            df_pref_exp_all = get_comparison_df(df_exp_nature)
+            avail_exp_years = sorted(df_pref_exp_all['年度'].astype(str).unique()) if not df_pref_exp_all.empty else []
+            
+            if avail_exp_years:
+                sel_exp_rank_year = st.selectbox("分析年度を選択", avail_exp_years, index=len(avail_exp_years)-1, key="exp_rank_tab_year")
+                
+                c_city_col = '団体名' if '団体名' in df_pref_exp_all.columns else ('市町村名' if '市町村名' in df_pref_exp_all.columns else df_pref_exp_all.columns[0])
+                c_pref_col = '都道府県' if '都道府県' in df_pref_exp_all.columns else '都道府県名'
+                group_er_cols = [c for c in [c_pref_col, c_city_col] if c in df_pref_exp_all.columns]
+
+                # 1. 全自治体 × 全項目の1人当たり支出 & 対平均倍率マトリクスを作成
+                exp_matrix_data = []
+                for cat_col in main_categories:
+                    cat_name = clean_col_label(cat_col)
+                    df_calc_tmp = df_pref_exp_all[df_pref_exp_all['年度'].astype(str) == str(sel_exp_rank_year)].groupby(group_er_cols, as_index=False)[cat_col].sum()
+                    df_calc_tmp['人口_num'] = get_population_series(df_calc_tmp, df_overview, sel_exp_rank_year)
+                    df_calc_valid = df_calc_tmp[df_calc_tmp['人口_num'] > 0].copy()
+                    df_calc_valid['pc_val'] = (df_calc_valid[cat_col] / df_calc_valid['人口_num']).round(1)
+                    
+                    cat_avg = df_calc_valid['pc_val'].mean()
+                    
+                    for _, row in df_calc_valid.iterrows():
+                        c_name = row[c_city_col]
+                        pc_val = row['pc_val']
+                        ratio = round(pc_val / cat_avg, 2) if cat_avg > 0 else 1.0
+                        exp_matrix_data.append({
+                            '自治体名': c_name,
+                            '項目名': cat_name,
+                            '1人当たり金額': pc_val,
+                            '対平均倍率': ratio
+                        })
+
+                if exp_matrix_data:
+                    df_exp_mat = pd.DataFrame(exp_matrix_data)
+                    
+                    # ピボットテーブルの作成（自治体 × 項目）
+                    df_ratio_pivot = df_exp_mat.pivot(index='自治体名', columns='項目名', values='対平均倍率')
+                    df_pc_pivot = df_exp_mat.pivot(index='自治体名', columns='項目名', values='1人当たり金額')
+
+                    st.markdown(f"#### 🗺️ {scope_label} 性質別歳出 特化度ヒートマップ（{sel_exp_rank_year}年度）")
+                    st.caption("※ 数値は「地域平均 = 1.00」とした倍率です。色が濃い赤ほど平均に対して支出が手厚い（高コスト）項目です。")
+
+                    # ヒートマップ描画
+                    fig_exp_heatmap = px.imshow(
+                        df_ratio_pivot,
+                        labels=dict(x="性質別支出項目", y="自治体名", color="対平均倍率"),
+                        x=df_ratio_pivot.columns,
+                        y=df_ratio_pivot.index,
+                        color_continuous_scale="Reds",
+                        aspect="auto",
+                        text_auto=".2f"
+                    )
+                    fig_exp_heatmap.update_xaxes(side="top")
+                    fig_exp_heatmap.update_layout(height=max(450, len(df_ratio_pivot) * 30))
+                    st.plotly_chart(fig_exp_heatmap, use_container_width=True, key="exp_heatmap")
+
+                    st.markdown("---")
+
+                    # 2. 一目でわかる！各自治体の「一番強み・特化している項目」一覧
+                    st.markdown("#### 💡 各自治体の「最も手厚い配分項目（最大特化項目）」一覧")
+                    top_feature_list = []
+                    for city_name, row in df_ratio_pivot.iterrows():
+                        max_item = row.idxmax()
+                        max_ratio = row.max()
+                        pc_val = df_pc_pivot.loc[city_name, max_item]
+                        top_feature_list.append({
+                            '自治体名': city_name,
+                            '最も手厚い支出項目': max_item,
+                            '対平均倍率': f"{max_ratio:.2f} 倍",
+                            '1人当たり金額': f"{pc_val:,.1f} 千円"
+                        })
+                    
+                    df_top_feat = pd.DataFrame(top_feature_list)
+                    st.dataframe(df_top_feat, use_container_width=True, hide_index=True)
+
+                    st.markdown("---")
+
+                    # 3. 選択中の自治体の全項目一括ポジショニング
+                    clean_sel_city = str(selected_city).strip()
+                    df_sel_city_exp = df_exp_mat[df_exp_mat['自治体名'].str.contains(clean_sel_city, regex=False)].sort_values('対平均倍率', ascending=True)
+
+                    if not df_sel_city_exp.empty:
+                        st.markdown(f"#### 📍 **{selected_city}** の全性質別項目 ポジショニング（対平均倍率）")
+                        fig_sel_exp_bar = px.bar(
+                            df_sel_city_exp, x='対平均倍率', y='項目名', orientation='h',
+                            text='対平均倍率', color='対平均倍率', color_continuous_scale='Reds',
+                            custom_data=['1人当たり金額']
+                        )
+                        fig_sel_exp_bar.add_vline(x=1.0, line_dash="dash", line_color="black", annotation_text="地域平均 (1.00倍)")
+                        fig_sel_exp_bar.update_traces(
+                            texttemplate='%{text:.2f} 倍', textposition='outside',
+                            hovertemplate="項目名: %{y}<br>1人当たり: %{customdata[0]:,.1f} 千円<br>対平均倍率: %{x:.2f} 倍<extra></extra>"
+                        )
+                        fig_sel_exp_bar.update_layout(xaxis_title="対平均倍率（1.0以上で高配分）", yaxis_title="支出項目", height=400)
+                        st.plotly_chart(fig_sel_exp_bar, use_container_width=True, key="sel_city_exp_bar")
 
 # ==========================================
 # メニュー4: 目的別歳出
@@ -1380,30 +1567,31 @@ elif menu == "目的別歳出":
         '教育費_合計', '災害復旧費_合計', '公債費_合計', '諸支出金_合計', '前年度繰上充用金'
     ]
     
-    main_purp_categories = [c for c in candidate_purp_cats if c in df_purp_city.columns]
+    main_purp_categories = [c for c in candidate_purp_cats if c in df_exp_purpose.columns]
     
     if not main_purp_categories:
         short_cats = [c.replace('_合計', '') for c in candidate_purp_cats]
-        main_purp_categories = [c for c in short_cats if c in df_purp_city.columns]
+        main_purp_categories = [c for c in short_cats if c in df_exp_purpose.columns]
         
     if not main_purp_categories:
         keywords = ['議会', '総務', '民生', '衛生', '労働', '農林', '商工', '土木', '消防', '教育', '災害復旧', '公債', '諸支出']
         main_purp_categories = [
-            c for c in df_purp_city.columns 
+            c for c in df_exp_purpose.columns 
             if any(kw in c for kw in keywords) and not any(ex in c for ex in ['1人当たり', '割合', '%', 'パーセント', '小計', '対前年'])
         ]
 
-    if not df_purp_city.empty and main_purp_categories:
+    if not df_exp_purpose.empty and main_purp_categories:
         purp_category_order = [clean_col_label(c) for c in main_purp_categories]
 
-        tab_purp1, tab_purp2, tab_purp3, tab_purp4 = st.tabs([
+        tab_purp1, tab_purp2, tab_purp3, tab_purp4, tab_purp5, tab_purp6 = st.tabs([
             "📈 自治体単体分析", 
             "📊 自治体間比較（総額）", 
             "👥 自治体間比較（1人当たり）",
-            "🔍 細分化項目比較（事業費内訳一括・個別）"
+            "🔍 細分化項目比較（事業費内訳一括・個別）",
+            "🏆 項目別ランキング・自治体力点分析",
+            "👑 1人当たり県内トップ・ワースト一覧"
         ])
 
-        # --- Tab 1: 自治体単体分析 ---
         with tab_purp1:
             st.subheader("1. 目的別歳出の時系列推移（総額 vs 人口1人当たり）")
             
@@ -1411,58 +1599,58 @@ elif menu == "目的別歳出":
             c_pref_col = '都道府県' if '都道府県' in df_purp_city.columns else '都道府県名'
             group_cols_p = [c for c in [c_pref_col, c_city_col, '年度'] if c in df_purp_city.columns]
 
-            df_plot_p_base = df_purp_city.groupby(group_cols_p, as_index=False)[main_purp_categories].sum()
-            df_plot_p_base['目的別歳出合計'] = df_plot_p_base[main_purp_categories].sum(axis=1)
-            df_plot_p_base['人口_num'] = get_population_series(df_plot_p_base, df_overview, "latest")
+            if not df_purp_city.empty:
+                df_plot_p_base = df_purp_city.groupby(group_cols_p, as_index=False)[main_purp_categories].sum()
+                df_plot_p_base['目的別歳出合計'] = df_plot_p_base[main_purp_categories].sum(axis=1)
+                df_plot_p_base['人口_num'] = get_population_series(df_plot_p_base, df_overview, "latest")
 
-            sub_purp_tot, sub_purp_pc = st.tabs(["💰 総額推移", "👥 人口1人当たり推移"])
-            with sub_purp_tot:
-                df_melt_p = df_plot_p_base.melt(id_vars=['年度'], value_vars=main_purp_categories, var_name='項目_raw', value_name='金額')
-                df_melt_p['項目名'] = df_melt_p['項目_raw'].apply(clean_col_label)
-                df_melt_p = df_melt_p.groupby(['年度', '項目名'], as_index=False)['金額'].sum()
+                sub_purp_tot, sub_purp_pc = st.tabs(["💰 総額推移", "👥 人口1人当たり推移"])
+                with sub_purp_tot:
+                    df_melt_p = df_plot_p_base.melt(id_vars=['年度'], value_vars=main_purp_categories, var_name='項目_raw', value_name='金額')
+                    df_melt_p['項目名'] = df_melt_p['項目_raw'].apply(clean_col_label)
+                    df_melt_p = df_melt_p.groupby(['年度', '項目名'], as_index=False)['金額'].sum()
 
-                year_totals = df_melt_p.groupby('年度')['金額'].transform('sum')
-                df_melt_p['目的別歳出合計'] = year_totals
-                df_melt_p['割合(%)'] = (df_melt_p['金額'] / df_melt_p['目的別歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
+                    year_totals = df_melt_p.groupby('年度')['金額'].transform('sum')
+                    df_melt_p['目的別歳出合計'] = year_totals
+                    df_melt_p['割合(%)'] = (df_melt_p['金額'] / df_melt_p['目的別歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
 
-                fig_p = px.bar(
-                    df_melt_p, x='年度', y='金額', color='項目名', 
-                    title=f"{selected_city} 目的別歳出の推移（総額）", barmode='stack',
-                    custom_data=['項目名', '割合(%)'],
-                    category_orders={"項目名": purp_category_order}
-                )
-                fig_p.update_layout(yaxis_tickformat=",", yaxis_title="金額（千円）")
-                fig_p.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>金額: %{y:,.0f} 千円<br>構成比: %{customdata[1]}%<extra></extra>")
-                st.plotly_chart(fig_p, use_container_width=True, key="purp_trend_chart")
-
-            with sub_purp_pc:
-                if '人口_num' in df_plot_p_base.columns and (df_plot_p_base['人口_num'] > 0).any():
-                    df_pc_p_base = df_plot_p_base.copy()
-                    pc_cols_p = []
-                    for c in main_purp_categories:
-                        pc_col_name = c + '_1人当たり'
-                        df_pc_p_base[pc_col_name] = (df_pc_p_base[c] / df_pc_p_base['人口_num'].replace(0, np.nan)).round(2)
-                        pc_cols_p.append(pc_col_name)
-
-                    df_melt_p_pc = df_pc_p_base.melt(id_vars=['年度'], value_vars=pc_cols_p, var_name='項目_raw', value_name='1人当たり金額')
-                    df_melt_p_pc['項目名'] = df_melt_p_pc['項目_raw'].apply(lambda x: clean_col_label(x.replace('_1人当たり', '')))
-                    df_melt_p_pc = df_melt_p_pc.groupby(['年度', '項目名'], as_index=False)['1人当たり金額'].sum()
-
-                    pc_year_totals = df_melt_p_pc.groupby('年度')['1人当たり金額'].transform('sum')
-                    df_melt_p_pc['1人当たり目的別歳出合計'] = pc_year_totals
-                    df_melt_p_pc['割合(%)'] = (df_melt_p_pc['1人当たり金額'] / df_melt_p_pc['1人当たり目的別歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
-
-                    fig_p_pc = px.bar(
-                        df_melt_p_pc, x='年度', y='1人当たり金額', color='項目名', 
-                        title=f"{selected_city} 目的別歳出の推移（1人当たり）", barmode='stack',
+                    fig_p = px.bar(
+                        df_melt_p, x='年度', y='金額', color='項目名', 
+                        title=f"{selected_city} 目的別歳出の推移（総額）", barmode='stack',
                         custom_data=['項目名', '割合(%)'],
                         category_orders={"項目名": purp_category_order}
                     )
-                    fig_p_pc.update_layout(yaxis_tickformat=",.1f", yaxis_title="1人当たり金額（千円/人）")
-                    fig_p_pc.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>1人当たり金額: %{y:,.2f} 千円/人<br>構成比: %{customdata[1]}%<extra></extra>")
-                    st.plotly_chart(fig_p_pc, use_container_width=True, key="purp_pc_trend_chart")
+                    fig_p.update_layout(yaxis_tickformat=",", yaxis_title="金額（千円）")
+                    fig_p.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>金額: %{y:,.0f} 千円<br>構成比: %{customdata[1]}%<extra></extra>")
+                    st.plotly_chart(fig_p, use_container_width=True, key="purp_trend_chart")
 
-        # --- Tab 2: 自治体間比較（総額） ---
+                with sub_purp_pc:
+                    if '人口_num' in df_plot_p_base.columns and (df_plot_p_base['人口_num'] > 0).any():
+                        df_pc_p_base = df_plot_p_base.copy()
+                        pc_cols_p = []
+                        for c in main_purp_categories:
+                            pc_col_name = c + '_1人当たり'
+                            df_pc_p_base[pc_col_name] = (df_pc_p_base[c] / df_pc_p_base['人口_num'].replace(0, np.nan)).round(2)
+                            pc_cols_p.append(pc_col_name)
+
+                        df_melt_p_pc = df_pc_p_base.melt(id_vars=['年度'], value_vars=pc_cols_p, var_name='項目_raw', value_name='1人当たり金額')
+                        df_melt_p_pc['項目名'] = df_melt_p_pc['項目_raw'].apply(lambda x: clean_col_label(x.replace('_1人当たり', '')))
+                        df_melt_p_pc = df_melt_p_pc.groupby(['年度', '項目名'], as_index=False)['1人当たり金額'].sum()
+
+                        pc_year_totals = df_melt_p_pc.groupby('年度')['1人当たり金額'].transform('sum')
+                        df_melt_p_pc['1人当たり目的別歳出合計'] = pc_year_totals
+                        df_melt_p_pc['割合(%)'] = (df_melt_p_pc['1人当たり金額'] / df_melt_p_pc['1人当たり目的別歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
+
+                        fig_p_pc = px.bar(
+                            df_melt_p_pc, x='年度', y='1人当たり金額', color='項目名', 
+                            title=f"{selected_city} 目的別歳出の推移（1人当たり）", barmode='stack',
+                            custom_data=['項目名', '割合(%)'],
+                            category_orders={"項目名": purp_category_order}
+                        )
+                        fig_p_pc.update_layout(yaxis_tickformat=",.1f", yaxis_title="1人当たり金額（千円/人）")
+                        fig_p_pc.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>1人当たり金額: %{y:,.2f} 千円/人<br>構成比: %{customdata[1]}%<extra></extra>")
+                        st.plotly_chart(fig_p_pc, use_container_width=True, key="purp_pc_trend_chart")
+
         with tab_purp2:
             st.subheader(f"{scope_label} 目的別歳出比較（総額）")
             df_pref_purp = get_comparison_df(df_exp_purpose)
@@ -1475,7 +1663,9 @@ elif menu == "目的別歳出":
 
                 df_comp_p = df_pref_purp[df_pref_purp['年度'].astype(str) == str(comp_year_purp)].groupby(group_c_cols, as_index=False)[main_purp_categories].sum()
                 df_comp_p['目的別歳出合計'] = df_comp_p[main_purp_categories].sum(axis=1)
+                
                 df_comp_p = df_comp_p.sort_values('目的別歳出合計', ascending=False)
+                sorted_cities_p = df_comp_p[c_city_col].tolist()
 
                 df_melt_cp = df_comp_p.melt(id_vars=group_c_cols + ['目的別歳出合計'], value_vars=main_purp_categories, var_name='項目_raw', value_name='金額')
                 df_melt_cp['項目名'] = df_melt_cp['項目_raw'].apply(clean_col_label)
@@ -1486,13 +1676,12 @@ elif menu == "目的別歳出":
                     df_melt_cp, x=c_city_col, y='金額', color='項目名', 
                     title=f"{scope_label}（{comp_year_purp}年度）目的別歳出比較（総額・大きい順）", barmode='stack',
                     custom_data=[c_pref_col if c_pref_col in df_melt_cp.columns else c_city_col, '項目名', '割合(%)'],
-                    category_orders={"項目名": purp_category_order}
+                    category_orders={"項目名": purp_category_order, c_city_col: sorted_cities_p}
                 )
                 fig_cp.update_layout(yaxis_tickformat=",", xaxis_title="自治体名", yaxis_title="金額（千円）")
                 fig_cp.update_traces(hovertemplate="都道府県: %{customdata[0]}<br><b>自治体: %{x}</b><br>項目名: %{customdata[1]}<br>金額: %{y:,.0f} 千円<br>構成比: %{customdata[2]}%<extra></extra>")
                 st.plotly_chart(fig_cp, use_container_width=True, key="purp_tot_comp_chart")
 
-        # --- Tab 3: 自治体間比較（人口1人当たり） ---
         with tab_purp3:
             st.subheader(f"{scope_label} 目的別歳出比較（人口1人当たり）")
             df_pref_purp = get_comparison_df(df_exp_purpose)
@@ -1515,7 +1704,9 @@ elif menu == "目的別歳出":
                     pc_cols_p.append(pc_c)
 
                 df_comp_p_pop['1人当たり目的別歳出合計'] = df_comp_p_pop[pc_cols_p].sum(axis=1)
+                
                 df_comp_p_pop = df_comp_p_pop.sort_values('1人当たり目的別歳出合計', ascending=False)
+                sorted_cities_p_pop = df_comp_p_pop[c_city_col].tolist()
 
                 df_melt_cp_pc = df_comp_p_pop.melt(id_vars=group_c_cols + ['1人当たり目的別歳出合計'], value_vars=pc_cols_p, var_name='項目_raw', value_name='1人当たり金額')
                 df_melt_cp_pc['項目名'] = df_melt_cp_pc['項目_raw'].apply(lambda x: clean_col_label(x.replace('_1人当たり', '')))
@@ -1526,13 +1717,12 @@ elif menu == "目的別歳出":
                     df_melt_cp_pc, x=c_city_col, y='1人当たり金額', color='項目名', 
                     title=f"{scope_label}（{comp_year_purp_pop}年度）自治体別 1人当たり目的別歳出比較（大きい順）", barmode='stack',
                     custom_data=[c_pref_col if c_pref_col in df_melt_cp_pc.columns else c_city_col, '項目名', '割合(%)'],
-                    category_orders={"項目名": purp_category_order}
+                    category_orders={"項目名": purp_category_order, c_city_col: sorted_cities_p_pop}
                 )
                 fig_pc_p.update_layout(yaxis_tickformat=",.1f", xaxis_title="自治体名", yaxis_title="1人当たり金額（千円/人）")
                 fig_pc_p.update_traces(hovertemplate="都道府県: %{customdata[0]}<br><b>自治体: %{x}</b><br>項目名: %{customdata[1]}<br>1人当たり金額: %{y:,.2f} 千円/人<br>構成比: %{customdata[2]}%<extra></extra>")
                 st.plotly_chart(fig_pc_p, use_container_width=True, key="purp_pc_comp_chart")
 
-        # --- Tab 4: 細分化項目比較 ---
         with tab_purp4:
             st.subheader("🔍 目的別歳出 細分化事業内訳の比較分析")
             df_pref_purp = get_comparison_df(df_exp_purpose)
@@ -1569,6 +1759,7 @@ elif menu == "目的別歳出":
                         
                         df_pref_sub_p_y['内訳合計_calc'] = df_pref_sub_p_y[plot_sub_cols_p].sum(axis=1)
                         df_pref_sub_p_y = df_pref_sub_p_y.sort_values('内訳合計_calc', ascending=False)
+                        sorted_cities_sub1 = df_pref_sub_p_y[c_city_col].tolist()
 
                         df_melt_all_sub_p = df_pref_sub_p_y.melt(id_vars=group_c_cols + ['内訳合計_calc'], value_vars=plot_sub_cols_p, var_name='項目_raw', value_name='数値')
                         df_melt_all_sub_p['内訳名'] = df_melt_all_sub_p['項目_raw'].apply(lambda x: sub_purp_labels.get(x.replace('_1人当たり', ''), clean_col_label(x)))
@@ -1578,7 +1769,8 @@ elif menu == "目的別歳出":
                         fig_all_sub_p = px.bar(
                             df_melt_all_sub_p, x=c_city_col, y='数値', color='内訳名',
                             title=f"{scope_label}（{selected_sub_purp_year}年度）{purp_parent_options[selected_purp_parent]} 事業内訳一括比較（1人当たり）",
-                            barmode='stack', custom_data=[c_pref_col if c_pref_col in df_melt_all_sub_p.columns else c_city_col, '内訳名', '割合(%)']
+                            barmode='stack', custom_data=[c_pref_col if c_pref_col in df_melt_all_sub_p.columns else c_city_col, '内訳名', '割合(%)'],
+                            category_orders={c_city_col: sorted_cities_sub1}
                         )
                         fig_all_sub_p.update_layout(yaxis_tickformat=",.1f", xaxis_title="自治体名", yaxis_title="1人当たり金額（千円/人）")
                         fig_all_sub_p.update_traces(hovertemplate="都道府県: %{customdata[0]}<br><b>自治体: %{x}</b><br>内訳: %{customdata[1]}<br>1人当たり: %{y:,.2f} 千円/人<br>構成比: %{customdata[2]}%<extra></extra>")
@@ -1586,6 +1778,7 @@ elif menu == "目的別歳出":
                     else:
                         df_pref_sub_p_y['内訳合計_calc'] = df_pref_sub_p_y[sub_purp_cols].sum(axis=1)
                         df_pref_sub_p_y = df_pref_sub_p_y.sort_values('内訳合計_calc', ascending=False)
+                        sorted_cities_sub2 = df_pref_sub_p_y[c_city_col].tolist()
 
                         df_melt_all_sub_p = df_pref_sub_p_y.melt(id_vars=group_c_cols + ['内訳合計_calc'], value_vars=sub_purp_cols, var_name='項目_raw', value_name='数値')
                         df_melt_all_sub_p['内訳名'] = df_melt_all_sub_p['項目_raw'].apply(lambda x: sub_purp_labels.get(x, clean_col_label(x)))
@@ -1595,7 +1788,8 @@ elif menu == "目的別歳出":
                         fig_all_sub_p = px.bar(
                             df_melt_all_sub_p, x=c_city_col, y='数値', color='内訳名',
                             title=f"{scope_label}（{selected_sub_purp_year}年度）{purp_parent_options[selected_purp_parent]} 事業内訳一括比較（総額）",
-                            barmode='stack', custom_data=[c_pref_col if c_pref_col in df_melt_all_sub_p.columns else c_city_col, '内訳名', '割合(%)']
+                            barmode='stack', custom_data=[c_pref_col if c_pref_col in df_melt_all_sub_p.columns else c_city_col, '内訳名', '割合(%)'],
+                            category_orders={c_city_col: sorted_cities_sub2}
                         )
                         fig_all_sub_p.update_layout(yaxis_tickformat=",", xaxis_title="自治体名", yaxis_title="金額（千円）")
                         fig_all_sub_p.update_traces(hovertemplate="都道府県: %{customdata[0]}<br><b>自治体: %{x}</b><br>内訳: %{customdata[1]}<br>金額: %{y:,.0f} 千円<br>構成比: %{customdata[2]}%<extra></extra>")
@@ -1626,18 +1820,113 @@ elif menu == "目的別歳出":
                     fig_sub_purp_rank = px.bar(
                         df_rank_sub_p, x=c_city_col, y=target_rank_col_p, color='表示色', text=target_rank_col_p,
                         title=f"{scope_label}（{selected_sub_purp_year_single}年度）{sub_purp_item_name} {sub_purp_rank_mode} 比較",
-                        color_discrete_map={'選択中の自治体': '#FF4B4B', '一般自治体': '#1F77B4', 'その他自治体': '#1F77B4'},
+                        color_discrete_map={'選択中の自治体': '#FF4B4B', 'その他自治体': '#1F77B4'},
                         custom_data=[c_pref_col if c_pref_col in df_rank_sub_p.columns else c_city_col, selected_sub_purp_item]
                     )
                     fig_sub_purp_rank.update_traces(texttemplate='%{text:,.1f}', textposition='outside', hovertemplate="都道府県: %{customdata[0]}<br><b>自治体: %{x}</b><br>数値: %{y:,.2f}<br>総額: %{customdata[1]:,.0f} 千円<extra></extra>")
                     st.plotly_chart(fig_sub_purp_rank, use_container_width=True, key="purp_sub2_single_chart")
             else:
                 st.info("選択された項目には詳細な事業内訳データが含まれていません。")
-    else:
-        st.warning("選択された自治体の目的別歳出データが見つかりませんでした。")
-        st.info("💡 **データの確認ポイント**:\n"
-                "1. Googleスプレッドシートのタブ名が `目的別歳出` や `目的別` になっているか確認してください。\n"
-                "2. スプレッドシート更新時はアプリ画面で `C` キーを押してキャッシュを再読み込みしてください。")
+
+        with tab_purp5:
+            st.subheader("🏆 全項目一括可視化 & 自治体力点分析（目的別）")
+            st.markdown("全事業項目（民生費・教育費・土木費など）における各自治体の支出特化度（地域平均を1.0とした場合の倍率）を1ページにまとめて可視化しています。")
+
+            df_pref_purp_all = get_comparison_df(df_exp_purpose)
+            avail_purp_years = sorted(df_pref_purp_all['年度'].astype(str).unique()) if not df_pref_purp_all.empty else []
+            
+            if avail_purp_years:
+                sel_purp_rank_year = st.selectbox("分析年度を選択", avail_purp_years, index=len(avail_purp_years)-1, key="purp_rank_tab_year")
+                
+                c_city_col = '団体名' if '団体名' in df_pref_purp_all.columns else ('市町村名' if '市町村名' in df_pref_purp_all.columns else df_pref_purp_all.columns[0])
+                c_pref_col = '都道府県' if '都道府県' in df_pref_purp_all.columns else '都道府県名'
+                group_r_cols = [c for c in [c_pref_col, c_city_col] if c in df_pref_purp_all.columns]
+
+                # 1. 全自治体 × 全項目の1人当たり支出 & 対平均倍率マトリクスを作成
+                purp_matrix_data = []
+                for cat_col in main_purp_categories:
+                    cat_name = clean_col_label(cat_col)
+                    df_calc_tmp = df_pref_purp_all[df_pref_purp_all['年度'].astype(str) == str(sel_purp_rank_year)].groupby(group_r_cols, as_index=False)[cat_col].sum()
+                    df_calc_tmp['人口_num'] = get_population_series(df_calc_tmp, df_overview, sel_purp_rank_year)
+                    df_calc_valid = df_calc_tmp[df_calc_tmp['人口_num'] > 0].copy()
+                    df_calc_valid['pc_val'] = (df_calc_valid[cat_col] / df_calc_valid['人口_num']).round(1)
+                    
+                    cat_avg = df_calc_valid['pc_val'].mean()
+                    
+                    for _, row in df_calc_valid.iterrows():
+                        c_name = row[c_city_col]
+                        pc_val = row['pc_val']
+                        ratio = round(pc_val / cat_avg, 2) if cat_avg > 0 else 1.0
+                        purp_matrix_data.append({
+                            '自治体名': c_name,
+                            '項目名': cat_name,
+                            '1人当たり金額': pc_val,
+                            '対平均倍率': ratio
+                        })
+
+                if purp_matrix_data:
+                    df_purp_mat = pd.DataFrame(purp_matrix_data)
+                    
+                    # ピボットテーブルの作成（自治体 × 項目）
+                    df_purp_ratio_pivot = df_purp_mat.pivot(index='自治体名', columns='項目名', values='対平均倍率')
+                    df_purp_pc_pivot = df_purp_mat.pivot(index='自治体名', columns='項目名', values='1人当たり金額')
+
+                    st.markdown(f"#### 🗺️ {scope_label} 目的別歳出 特化度ヒートマップ（{sel_purp_rank_year}年度）")
+                    st.caption("※ 数値は「地域平均 = 1.00」とした倍率です。色が濃い赤ほど政策的に重点投資（力を入れている）項目です。")
+
+                    # ヒートマップ描画
+                    fig_purp_heatmap = px.imshow(
+                        df_purp_ratio_pivot,
+                        labels=dict(x="目的別支出項目", y="自治体名", color="対平均倍率"),
+                        x=df_purp_ratio_pivot.columns,
+                        y=df_purp_ratio_pivot.index,
+                        color_continuous_scale="Reds",
+                        aspect="auto",
+                        text_auto=".2f"
+                    )
+                    fig_purp_heatmap.update_xaxes(side="top")
+                    fig_purp_heatmap.update_layout(height=max(450, len(df_purp_ratio_pivot) * 30))
+                    st.plotly_chart(fig_purp_heatmap, use_container_width=True, key="purp_heatmap")
+
+                    st.markdown("---")
+
+                    # 2. 一目でわかる！各自治体の「最も力を入れている（重点）項目」一覧
+                    st.markdown("#### 💡 各自治体の「最も重点投資している項目（最大特化項目）」一覧")
+                    top_purp_feature_list = []
+                    for city_name, row in df_purp_ratio_pivot.iterrows():
+                        max_item = row.idxmax()
+                        max_ratio = row.max()
+                        pc_val = df_purp_pc_pivot.loc[city_name, max_item]
+                        top_purp_feature_list.append({
+                            '自治体名': city_name,
+                            '最も重点的な支出分野': max_item,
+                            '対平均倍率': f"{max_ratio:.2f} 倍",
+                            '1人当たり金額': f"{pc_val:,.1f} 千円"
+                        })
+                    
+                    df_top_purp_feat = pd.DataFrame(top_purp_feature_list)
+                    st.dataframe(df_top_purp_feat, use_container_width=True, hide_index=True)
+
+                    st.markdown("---")
+
+                    # 3. 選択中の自治体の全項目一括ポジショニング
+                    clean_sel_city = str(selected_city).strip()
+                    df_sel_city_purp = df_purp_mat[df_purp_mat['自治体名'].str.contains(clean_sel_city, regex=False)].sort_values('対平均倍率', ascending=True)
+
+                    if not df_sel_city_purp.empty:
+                        st.markdown(f"#### 📍 **{selected_city}** の全目的別項目 支出力点ポジショニング（対平均倍率）")
+                        fig_sel_purp_bar = px.bar(
+                            df_sel_city_purp, x='対平均倍率', y='項目名', orientation='h',
+                            text='対平均倍率', color='対平均倍率', color_continuous_scale='Reds',
+                            custom_data=['1人当たり金額']
+                        )
+                        fig_sel_purp_bar.add_vline(x=1.0, line_dash="dash", line_color="black", annotation_text="地域平均 (1.00倍)")
+                        fig_sel_purp_bar.update_traces(
+                            texttemplate='%{text:.2f} 倍', textposition='outside',
+                            hovertemplate="項目名: %{y}<br>1人当たり: %{customdata[0]:,.1f} 千円<br>対平均倍率: %{x:.2f} 倍<extra></extra>"
+                        )
+                        fig_sel_purp_bar.update_layout(xaxis_title="対平均倍率（1.0以上で重点投資）", yaxis_title="事業項目", height=400)
+                        st.plotly_chart(fig_sel_purp_bar, use_container_width=True, key="sel_city_purp_bar")
 
 # ==========================================
 # メニュー5: 地方債・基金
