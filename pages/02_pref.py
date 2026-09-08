@@ -8,7 +8,6 @@ from utils.data_loader import load_pref_data
 
 # --- 年度整形用ヘルパー関数 ---
 def format_year(val):
-    """'2024.0' や 2024.0 を '2024' に整形する"""
     if pd.isna(val):
         return ""
     s = str(val).strip()
@@ -16,24 +15,33 @@ def format_year(val):
         return s[:-2]
     return s
 
-# 都道府県用データの呼び出し
+# 都道府県用データの呼び出し（人口データ包含）
 loaded_data = load_pref_data()
-if isinstance(loaded_data, (tuple, list)) and len(loaded_data) >= 5:
+if isinstance(loaded_data, (tuple, list)) and len(loaded_data) >= 6:
+    df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds, df_pop = loaded_data[:6]
+elif isinstance(loaded_data, (tuple, list)) and len(loaded_data) >= 5:
     df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds = loaded_data[:5]
+    df_pop = pd.DataFrame()
 else:
     df_overview, df_revenue, df_exp_nature, df_exp_purpose = loaded_data[:4]
     df_bonds = pd.DataFrame()
+    df_pop = pd.DataFrame()
 
-# 全データフレームの「年度」表記を「2024」形式に一括統一
-for df in [df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds]:
+# 全データフレームの「年度」表記を統一
+for df in [df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds, df_pop]:
     if not df.empty and '年度' in df.columns:
         df['年度'] = df['年度'].apply(format_year)
+
+# 人口データを df_overview に自動マージ（マージキー: 都道府県）
+if not df_pop.empty and not df_overview.empty:
+    pop_merge_cols = [c for c in df_pop.columns if c not in ['年度', '国勢調査_調査年'] or c == '都道府県']
+    if '都道府県' in df_overview.columns and '都道府県' in df_pop.columns:
+        df_overview = pd.merge(df_overview, df_pop[pop_merge_cols].drop_duplicates(subset=['都道府県']), on='都道府県', how='left', suffixes=('', '_pop'))
 
 st.title("🏢 都道府県 財政分析")
 
 # --- ラベル整形用ヘルパー関数 ---
 def clean_col_label(text):
-    """'地方税_合計' や '地方税_合計_1人当たり' などの接尾辞を除去して綺麗な表示名にする"""
     if not isinstance(text, str):
         return text
     return (text.replace('_合計', '')
@@ -64,15 +72,11 @@ df_ref = df_overview if not df_overview.empty else df_revenue
 if not df_ref.empty:
     if '都道府県' in df_ref.columns:
         all_prefs.update(df_ref['都道府県'].dropna().unique())
-    elif '団体名' in df_ref.columns:
-        all_prefs.update(df_ref['団体名'].dropna().unique())
 
 sorted_prefs = sorted(list(all_prefs), key=lambda x: pref_order_dict.get(x, 999))
 pref_options = sorted_prefs if sorted_prefs else PREF_ORDER
 pref_default_idx = pref_options.index('山梨県') if '山梨県' in pref_options else 0
 selected_pref = st.sidebar.selectbox("都道府県を選択", pref_options, index=pref_default_idx)
-
-scope_label = "全国（47都道府県）"
 
 menu = st.sidebar.radio("表示メニュー", ["概要", "歳入", "性質別歳出", "目的別歳出", "地方債・基金"])
 
@@ -82,23 +86,16 @@ def filter_by_pref(df, pref):
         return df
     if '都道府県' in df.columns:
         return df[df['都道府県'] == pref].sort_values('年度', key=lambda x: x.astype(str))
-    elif '団体名' in df.columns:
-        return df[df['団体名'] == pref].sort_values('年度', key=lambda x: x.astype(str))
     return df
 
-def get_comparison_df(df):
-    return df
-
-# --- 人口カラム検出関数 ---
+# --- 人口カラム検出関数（住基人口優先） ---
 def get_population_col(df):
-    pop_cols = [c for c in df.columns if '人口' in c and '千円' not in c and '%' not in c and 'パーセント' not in c]
-    if not pop_cols:
-        return None
-    for priority_kw in ['住民基本台帳人口', '総人口', '人口']:
-        matched = [c for c in pop_cols if priority_kw in c]
+    for priority_kw in ['住民基本台帳人口_人', '住民基本台帳人口', '総人口', '人口']:
+        matched = [c for c in df.columns if priority_kw in c and '千円' not in c and '%' not in c]
         if matched:
             return matched[0]
-    return pop_cols[0]
+    pop_cols = [c for c in df.columns if '人口' in c and '千円' not in c and '%' not in c and 'パーセント' not in c]
+    return pop_cols[0] if pop_cols else None
 
 # --- 人口取得用ヘルパー関数 ---
 def get_population_series(df_target, df_ov, target_year):
@@ -124,17 +121,12 @@ def get_population_series(df_target, df_ov, target_year):
         
     return pd.to_numeric(pop_series, errors='coerce')
 
-# 都道府県キーの一貫性保持用の補正処理
-for df_temp in [df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds]:
-    if not df_temp.empty and '団体名' not in df_temp.columns and '都道府県' in df_temp.columns:
-        df_temp['団体名'] = df_temp['都道府県']
-
-# 選択された都道府県のデータを抽出
 df_ov_pref = filter_by_pref(df_overview, selected_pref)
 df_rev_pref = filter_by_pref(df_revenue, selected_pref)
 df_exp_pref = filter_by_pref(df_exp_nature, selected_pref)
 df_purp_pref = filter_by_pref(df_exp_purpose, selected_pref)
 df_bonds_pref = filter_by_pref(df_bonds, selected_pref)
+df_pop_pref = filter_by_pref(df_pop, selected_pref) if not df_pop.empty else pd.DataFrame()
 
 st.write(f"**{selected_pref}** の財政データをご案内します。")
 
@@ -730,17 +722,119 @@ if menu == "概要":
 
         # --- Tab 6: 人口・産業 ---
         with tab6:
-            subtab_prof1, subtab_prof2 = st.tabs(["👥 人口・職員数", "🏗️ 産業割合"])
-            with subtab_prof1:
-                pop_cols = [c for c in df_ov_pref.columns if '人口' in c and not any(kw in c for kw in ['千円', '%', '割合', '比率'])]
-                if pop_cols:
-                    fig_pop = px.line(df_ov_pref, x='年度', y=pop_cols, markers=True, title="人口推移")
-                    st.plotly_chart(fig_pop, use_container_width=True, key="prof_pop_chart")
-            with subtab_prof2:
-                ind_cols = [c for c in df_ov_pref.columns if any(kw in c for kw in ['第1次', '第2次', '第3次', '産業'])]
-                if ind_cols:
-                    fig_ind = px.bar(df_ov_pref, x='年度', y=ind_cols, title="産業構造の推移", barmode='stack')
-                    st.plotly_chart(fig_ind, use_container_width=True, key="prof_ind_chart")
+            st.markdown(f"#### 👥 {selected_pref} の人口構造・世帯・産業構造")
+            
+            # メトリクスカード表示（人口データの抽出）
+            pop_row = df_pop_pref.iloc[0] if not df_pop_pref.empty else (df_ov_pref.iloc[0] if not df_ov_pref.empty else None)
+            if pop_row is not None:
+                p1, p2, p3, p4 = st.columns(4)
+                with p1:
+                    juki_pop = pop_row.get('住民基本台帳人口_人', pop_row.get('住民基本台帳人口', np.nan))
+                    jp_pop = pop_row.get('うち日本人人口_人', np.nan)
+                    if not pd.isna(juki_pop):
+                        sub_txt = f"うち日本人: {int(jp_pop):,} 人" if not pd.isna(jp_pop) else None
+                        st.metric("住民基本台帳人口", f"{int(juki_pop):,} 人", delta=sub_txt, delta_color="normal")
+                with p2:
+                    dens = pop_row.get('人口密度_人毎平方km', pop_row.get('人口密度(人/km2)', np.nan))
+                    households = pop_row.get('世帯数_千世帯', np.nan)
+                    if not pd.isna(dens):
+                        st.metric("人口密度", f"{dens:,.1f} 人/km²", delta=f"世帯数: {households:,.0f} 千世帯" if not pd.isna(households) else None, delta_color="normal")
+                with p3:
+                    inc_pc = pop_row.get('1人当たり県民所得_千円', np.nan)
+                    if not pd.isna(inc_pc):
+                        st.metric("1人当たり県民所得", f"{inc_pc:,.0f} 千円")
+                with p4:
+                    pop_change = pop_row.get('人口増減率_パーセント', np.nan)
+                    if not pd.isna(pop_change):
+                        st.metric("人口増減率", f"{pop_change:+.1f} %")
+
+            st.markdown("---")
+            t_pop1, t_pop2, t_pop3, t_pop4 = st.tabs([
+                "👥 人口・世帯構造",
+                "🏗️ 産業構造（就業者比率）",
+                "💰 1人当たり県民所得（経済力比較）",
+                "📋 全都道府県 人口・産業一覧"
+            ])
+
+            # --- Subtab 1: 人口・世帯 ---
+            with t_pop1:
+                st.markdown("##### 👥 人口構成・世帯数の内訳")
+                if pop_row is not None:
+                    col_p1, col_p2 = st.columns(2)
+                    with col_p1:
+                        pop_items = {}
+                        if '住民基本台帳人口_人' in pop_row and not pd.isna(pop_row['住民基本台帳人口_人']):
+                            pop_items['住民基本台帳人口'] = pop_row['住民基本台帳人口_人']
+                        if 'うち日本人人口_人' in pop_row and not pd.isna(pop_row['うち日本人人口_人']):
+                            pop_items['うち日本人人口'] = pop_row['うち日本人人口_人']
+                        if '国勢調査人口_人' in pop_row and not pd.isna(pop_row['国勢調査人口_人']):
+                            pop_items['国勢調査人口'] = pop_row['国勢調査人口_人']
+
+                        if pop_items:
+                            df_pop_chart = pd.DataFrame(list(pop_items.items()), columns=['指標', '人口(人)'])
+                            fig_p_bar = px.bar(df_pop_chart, x='指標', y='人口(人)', text='人口(人)', title=f"{selected_pref} 人口指標比較", color='指標')
+                            fig_p_bar.update_traces(texttemplate='%{text:,.0f}人', textposition='outside')
+                            st.plotly_chart(fig_p_bar, use_container_width=True, key="pop_structure_bar")
+                    
+                    with col_p2:
+                        if '住民基本台帳人口_人' in pop_row and 'うち日本人人口_人' in pop_row:
+                            total_p = pop_row['住民基本台帳人口_人']
+                            jp_p = pop_row['うち日本人人口_人']
+                            foreign_p = total_p - jp_p if total_p >= jp_p else 0
+                            if total_p > 0:
+                                df_ratio = pd.DataFrame({
+                                    '区分': ['日本人住民', '外国人住民'],
+                                    '人口': [jp_p, foreign_p]
+                                })
+                                fig_pie = px.pie(df_ratio, values='人口', names='区分', title=f"{selected_pref} 住民構成比率", hole=0.4, color_discrete_sequence=['#1F77B4', '#FF7F0E'])
+                                fig_pie.update_traces(textinfo='percent+label')
+                                st.plotly_chart(fig_pie, use_container_width=True, key="pop_nationality_pie")
+
+            # --- Subtab 2: 産業構造 ---
+            with t_pop2:
+                st.markdown("##### 🏗️ 就業者別 産業構造（第1次・第2次・第3次産業比率）")
+                df_ind_source = df_pop if not df_pop.empty else df_overview
+                ind_cols = [c for c in df_ind_source.columns if any(kw in c for kw in ['第1次', '第2次', '第3次']) and ('割合' in c or '比率' in c or '構成比' in c)]
+                
+                if len(ind_cols) >= 3:
+                    df_ind_comp = df_ind_source.copy()
+                    df_ind_comp['表示色'] = df_ind_comp['都道府県'].apply(lambda x: selected_pref if x == selected_pref else 'その他')
+                    
+                    df_ind_melt = df_ind_comp.melt(id_vars=['都道府県', '表示色'], value_vars=ind_cols[:3], var_name='産業種別', value_name='割合(%)')
+                    df_ind_melt['産業種別'] = df_ind_melt['産業種別'].apply(clean_col_label)
+
+                    fig_ind_stack = px.bar(
+                        df_ind_melt, x='都道府県', y='割合(%)', color='産業種別',
+                        title="全国都道府県 就業者別産業構成比（100%スタック比較）", barmode='stack',
+                        color_discrete_sequence=['#2CA02C', '#FF7F0E', '#1F77B4']
+                    )
+                    fig_ind_stack.update_layout(yaxis_title="構成比 (%)", xaxis_title="都道府県名")
+                    st.plotly_chart(fig_ind_stack, use_container_width=True, key="pop_ind_stack_chart")
+
+            # --- Subtab 3: 1人当たり県民所得 ---
+            with t_pop3:
+                st.markdown("##### 💰 都道府県別 1人当たり県民所得 ランキング比較")
+                df_inc_source = df_pop if not df_pop.empty else df_overview
+                inc_col = [c for c in df_inc_source.columns if '県民所得' in c]
+                if inc_col:
+                    target_inc_col = inc_col[0]
+                    df_inc_sorted = df_inc_source.dropna(subset=[target_inc_col]).sort_values(target_inc_col, ascending=False).copy()
+                    df_inc_sorted['表示色'] = df_inc_sorted['都道府県'].apply(lambda x: '選択中の都道府県' if x == selected_pref else 'その他都道府県')
+
+                    fig_inc_bar = px.bar(
+                        df_inc_sorted, x='都道府県', y=target_inc_col, color='表示色', text=target_inc_col,
+                        title=f"全国都道府県 1人当たり県民所得 比較（千円/人）",
+                        color_discrete_map={'選択中の都道府県': '#FF4B4B', 'その他都道府県': '#1F77B4'}
+                    )
+                    fig_inc_bar.update_traces(texttemplate='%{text:,.0f} 千円', textposition='outside', hovertemplate="<b>都道府県: %{x}</b><br>県民所得: %{y:,.0f} 千円<extra></extra>")
+                    fig_inc_bar.update_layout(xaxis_title="都道府県名", yaxis_title="1人当たり県民所得（千円）")
+                    st.plotly_chart(fig_inc_bar, use_container_width=True, key="pop_income_rank_chart")
+
+            # --- Subtab 4: 全データ一覧 ---
+            with t_pop4:
+                st.markdown("##### 📋 全国都道府県 人口・産業データ一覧")
+                disp_pop_df = df_pop if not df_pop.empty else df_overview
+                st.dataframe(disp_pop_df, use_container_width=True)
 
         # --- Tab 7: データ一覧 ---
         with tab7:

@@ -26,7 +26,7 @@ def _clean_single_value(val):
 
 def _clean_dataframe_numeric(df, exclude_cols=None):
     if exclude_cols is None:
-        exclude_cols = ['年度', '都道府県', '都市区分', '自治体種別', '団体名', 'コード', '備考']
+        exclude_cols = ['年度', '都道府県', '都市区分', '自治体種別', '団体名', 'コード', '備考', '国勢調査_調査年']
     
     df = df.copy()
     for col in df.columns:
@@ -50,7 +50,6 @@ def _read_gsheet_safe(spreadsheet_url_or_id, worksheet_name=None):
         else:
             df = conn.read(spreadsheet=spreadsheet_url_or_id, ttl="1h")
     except Exception as e:
-        st.error(f"スプレッドシートの読み込みに失敗しました ({spreadsheet_url_or_id}): {e}")
         return pd.DataFrame()
     
     if df.empty:
@@ -59,7 +58,7 @@ def _read_gsheet_safe(spreadsheet_url_or_id, worksheet_name=None):
     if '年度' in df.columns:
         df['年度'] = df['年度'].astype(str)
         
-    exclude_cols = ['年度', '都道府県', '団体名', '都市区分', '自治体種別', 'コード', '備考']
+    exclude_cols = ['年度', '都道府県', '団体名', '都市区分', '自治体種別', 'コード', '備考', '国勢調査_調査年']
     df = _clean_dataframe_numeric(df, exclude_cols)
     return df
 
@@ -80,7 +79,7 @@ def load_data():
 
     return df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds
 
-# --- 都道府県用データ読み込み ---
+# --- 都道府県用データ読み込み（人口データ連携追加） ---
 @st.cache_data(ttl="1h")
 def load_pref_data():
     url_pref_overview = st.secrets["connections"]["gsheets"].get("url_pref_overview")
@@ -88,11 +87,29 @@ def load_pref_data():
     url_pref_exp_nature = st.secrets["connections"]["gsheets"].get("url_pref_exp_nature", url_pref_overview)
     url_pref_exp_purpose = st.secrets["connections"]["gsheets"].get("url_pref_exp_purpose", url_pref_overview)
     url_pref_bonds = st.secrets["connections"]["gsheets"].get("url_pref_bonds", url_pref_overview)
+    url_pref_pop = st.secrets["connections"]["gsheets"].get("url_pref_population")
 
     df_overview = _read_gsheet_safe(url_pref_overview)
     df_revenue = _read_gsheet_safe(url_pref_revenue)
     df_exp_nature = _read_gsheet_safe(url_pref_exp_nature)
     df_exp_purpose = _read_gsheet_safe(url_pref_exp_purpose)
     df_bonds = _read_gsheet_safe(url_pref_bonds)
+    df_pop = _read_gsheet_safe(url_pref_pop) if url_pref_pop else pd.DataFrame()
 
-    return df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds
+    # スプレッドシートURL未設定時はローカル pref_population.csv を試行
+    if df_pop.empty:
+        try:
+            import os
+            csv_path = "pref_population.csv"
+            if not os.path.exists(csv_path) and os.path.exists(os.path.join("utils", csv_path)):
+                csv_path = os.path.join("utils", csv_path)
+            if os.path.exists(csv_path):
+                df_pop = pd.read_csv(csv_path)
+                if '年度' in df_pop.columns:
+                    df_pop['年度'] = df_pop['年度'].astype(str)
+                exclude_cols = ['年度', '都道府県', '団体名', '国勢調査_調査年']
+                df_pop = _clean_dataframe_numeric(df_pop, exclude_cols)
+        except Exception:
+            df_pop = pd.DataFrame()
+
+    return df_overview, df_revenue, df_exp_nature, df_exp_purpose, df_bonds, df_pop
