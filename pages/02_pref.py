@@ -4,6 +4,15 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
+import sys
+from pathlib import Path
+
+# プロジェクトのルートディレクトリを sys.path に追加
+root_dir = Path(__file__).resolve().parent.parent
+if str(root_dir) not in sys.path:
+    sys.path.append(str(root_dir))
+
+# その後にインポートを実行
 from utils.data_loader import load_pref_data
 
 # --- 年度整形用ヘルパー関数 ---
