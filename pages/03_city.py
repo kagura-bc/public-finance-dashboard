@@ -1455,7 +1455,7 @@ elif menu == "性質別歳出":
 
         with tab_exp5:
             st.subheader("🏆 全項目一括可視化 & 自治体力点分析（性質別）")
-            st.markdown("全支出項目における各自治体の支出特化度（地域平均を1.0とした場合の倍率）を1ページにまとめて可視化しています。")
+            st.markdown("全支出項目における各自治体の支出特化度および項目ごとのトップ・ワースト自治体を1ページにまとめて可視化しています。")
 
             df_pref_exp_all = get_comparison_df(df_exp_nature)
             avail_exp_years = sorted(df_pref_exp_all['年度'].astype(str).unique()) if not df_pref_exp_all.empty else []
@@ -1467,7 +1467,7 @@ elif menu == "性質別歳出":
                 c_pref_col = '都道府県' if '都道府県' in df_pref_exp_all.columns else '都道府県名'
                 group_er_cols = [c for c in [c_pref_col, c_city_col] if c in df_pref_exp_all.columns]
 
-                # 1. 全自治体 × 全項目の1人当たり支出 & 対平均倍率マトリクスを作成
+                # 全自治体 × 全項目の1人当たり支出 & 対平均倍率マトリクスを作成
                 exp_matrix_data = []
                 for cat_col in main_categories:
                     cat_name = clean_col_label(cat_col)
@@ -1491,7 +1491,46 @@ elif menu == "性質別歳出":
 
                 if exp_matrix_data:
                     df_exp_mat = pd.DataFrame(exp_matrix_data)
+
+                    # 項目別 トップ・ワースト自治体サマリーの作成
+                    exp_item_summary = []
+                    for item_name, group in df_exp_mat.groupby('項目名'):
+                        top_row = group.sort_values('1人当たり金額', ascending=False).iloc[0]
+                        worst_row = group.sort_values('1人当たり金額', ascending=True).iloc[0]
+                        avg_val = group['1人当たり金額'].mean()
+                        
+                        exp_item_summary.append({
+                            '性質別項目': item_name,
+                            'トップ自治体名': top_row['自治体名'],
+                            'トップ1人当たり金額': top_row['1人当たり金額'],
+                            '🥇 トップ自治体': f"{top_row['自治体名']}（{top_row['1人当たり金額']:,.1f} 千円/人）",
+                            '⚓ ワースト自治体': f"{worst_row['自治体名']}（{worst_row['1人当たり金額']:,.1f} 千円/人）",
+                            '地域平均': f"{avg_val:,.1f} 千円/人"
+                        })
                     
+                    df_exp_item_summary = pd.DataFrame(exp_item_summary)
+
+                    # メトリックカード表示（単位「千円/人」を明記）
+                    cards_per_row = 4
+                    cols = st.columns(cards_per_row)
+                    for i, (_, row) in enumerate(df_exp_item_summary.iterrows()):
+                        col = cols[i % cards_per_row]
+                        with col:
+                            st.metric(
+                                label=f"📌 {row['性質別項目']} トップ",
+                                value=row['トップ自治体名'],
+                                delta=f"{row['トップ1人当たり金額']:,.1f} 千円/人"
+                            )
+
+                    st.markdown("##### 📋 全性質別項目 トップ・ワースト比較表")
+                    st.dataframe(
+                        df_exp_item_summary[['性質別項目', '🥇 トップ自治体', '⚓ ワースト自治体', '地域平均']], 
+                        use_container_width=True, 
+                        hide_index=True
+                    )
+
+                    st.markdown("---")
+
                     # ピボットテーブルの作成（自治体 × 項目）
                     df_ratio_pivot = df_exp_mat.pivot(index='自治体名', columns='項目名', values='対平均倍率')
                     df_pc_pivot = df_exp_mat.pivot(index='自治体名', columns='項目名', values='1人当たり金額')
@@ -1499,7 +1538,6 @@ elif menu == "性質別歳出":
                     st.markdown(f"#### 🗺️ {scope_label} 性質別歳出 特化度ヒートマップ（{sel_exp_rank_year}年度）")
                     st.caption("※ 数値は「地域平均 = 1.00」とした倍率です。色が濃い赤ほど平均に対して支出が手厚い（高コスト）項目です。")
 
-                    # ヒートマップ描画
                     fig_exp_heatmap = px.imshow(
                         df_ratio_pivot,
                         labels=dict(x="性質別支出項目", y="自治体名", color="対平均倍率"),
@@ -1515,26 +1553,6 @@ elif menu == "性質別歳出":
 
                     st.markdown("---")
 
-                    # 2. 一目でわかる！各自治体の「一番強み・特化している項目」一覧
-                    st.markdown("#### 💡 各自治体の「最も手厚い配分項目（最大特化項目）」一覧")
-                    top_feature_list = []
-                    for city_name, row in df_ratio_pivot.iterrows():
-                        max_item = row.idxmax()
-                        max_ratio = row.max()
-                        pc_val = df_pc_pivot.loc[city_name, max_item]
-                        top_feature_list.append({
-                            '自治体名': city_name,
-                            '最も手厚い支出項目': max_item,
-                            '対平均倍率': f"{max_ratio:.2f} 倍",
-                            '1人当たり金額': f"{pc_val:,.1f} 千円"
-                        })
-                    
-                    df_top_feat = pd.DataFrame(top_feature_list)
-                    st.dataframe(df_top_feat, use_container_width=True, hide_index=True)
-
-                    st.markdown("---")
-
-                    # 3. 選択中の自治体の全項目一括ポジショニング
                     clean_sel_city = str(selected_city).strip()
                     df_sel_city_exp = df_exp_mat[df_exp_mat['自治体名'].str.contains(clean_sel_city, regex=False)].sort_values('対平均倍率', ascending=True)
 
@@ -1830,7 +1848,7 @@ elif menu == "目的別歳出":
 
         with tab_purp5:
             st.subheader("🏆 全項目一括可視化 & 自治体力点分析（目的別）")
-            st.markdown("全事業項目（民生費・教育費・土木費など）における各自治体の支出特化度（地域平均を1.0とした場合の倍率）を1ページにまとめて可視化しています。")
+            st.markdown("全事業項目における各自治体の支出特化度および項目ごとのトップ・ワースト自治体を1ページにまとめて可視化しています。")
 
             df_pref_purp_all = get_comparison_df(df_exp_purpose)
             avail_purp_years = sorted(df_pref_purp_all['年度'].astype(str).unique()) if not df_pref_purp_all.empty else []
@@ -1842,7 +1860,7 @@ elif menu == "目的別歳出":
                 c_pref_col = '都道府県' if '都道府県' in df_pref_purp_all.columns else '都道府県名'
                 group_r_cols = [c for c in [c_pref_col, c_city_col] if c in df_pref_purp_all.columns]
 
-                # 1. 全自治体 × 全項目の1人当たり支出 & 対平均倍率マトリクスを作成
+                # 全自治体 × 全項目の1人当たり支出 & 対平均倍率マトリクスを作成
                 purp_matrix_data = []
                 for cat_col in main_purp_categories:
                     cat_name = clean_col_label(cat_col)
@@ -1866,7 +1884,46 @@ elif menu == "目的別歳出":
 
                 if purp_matrix_data:
                     df_purp_mat = pd.DataFrame(purp_matrix_data)
+
+                    # 項目別 トップ・ワースト自治体サマリーの作成
+                    purp_item_summary = []
+                    for item_name, group in df_purp_mat.groupby('項目名'):
+                        top_row = group.sort_values('1人当たり金額', ascending=False).iloc[0]
+                        worst_row = group.sort_values('1人当たり金額', ascending=True).iloc[0]
+                        avg_val = group['1人当たり金額'].mean()
+                        
+                        purp_item_summary.append({
+                            '事業・目的項目': item_name,
+                            'トップ自治体名': top_row['自治体名'],
+                            'トップ1人当たり金額': top_row['1人当たり金額'],
+                            '🥇 トップ自治体': f"{top_row['自治体名']}（{top_row['1人当たり金額']:,.1f} 千円/人）",
+                            '⚓ ワースト自治体': f"{worst_row['自治体名']}（{worst_row['1人当たり金額']:,.1f} 千円/人）",
+                            '地域平均': f"{avg_val:,.1f} 千円/人"
+                        })
                     
+                    df_purp_item_summary = pd.DataFrame(purp_item_summary)
+
+                    # メトリックカード表示（単位「千円/人」を明記）
+                    cards_per_row = 4
+                    cols_p = st.columns(cards_per_row)
+                    for i, (_, row) in enumerate(df_purp_item_summary.iterrows()):
+                        col = cols_p[i % cards_per_row]
+                        with col:
+                            st.metric(
+                                label=f"📌 {row['事業・目的項目']} トップ",
+                                value=row['トップ自治体名'],
+                                delta=f"{row['トップ1人当たり金額']:,.1f} 千円/人"
+                            )
+
+                    st.markdown("##### 📋 全目的別項目 トップ・ワースト比較表")
+                    st.dataframe(
+                        df_purp_item_summary[['事業・目的項目', '🥇 トップ自治体', '⚓ ワースト自治体', '地域平均']], 
+                        use_container_width=True, 
+                        hide_index=True
+                    )
+
+                    st.markdown("---")
+
                     # ピボットテーブルの作成（自治体 × 項目）
                     df_purp_ratio_pivot = df_purp_mat.pivot(index='自治体名', columns='項目名', values='対平均倍率')
                     df_purp_pc_pivot = df_purp_mat.pivot(index='自治体名', columns='項目名', values='1人当たり金額')
@@ -1874,7 +1931,6 @@ elif menu == "目的別歳出":
                     st.markdown(f"#### 🗺️ {scope_label} 目的別歳出 特化度ヒートマップ（{sel_purp_rank_year}年度）")
                     st.caption("※ 数値は「地域平均 = 1.00」とした倍率です。色が濃い赤ほど政策的に重点投資（力を入れている）項目です。")
 
-                    # ヒートマップ描画
                     fig_purp_heatmap = px.imshow(
                         df_purp_ratio_pivot,
                         labels=dict(x="目的別支出項目", y="自治体名", color="対平均倍率"),
@@ -1890,26 +1946,6 @@ elif menu == "目的別歳出":
 
                     st.markdown("---")
 
-                    # 2. 一目でわかる！各自治体の「最も力を入れている（重点）項目」一覧
-                    st.markdown("#### 💡 各自治体の「最も重点投資している項目（最大特化項目）」一覧")
-                    top_purp_feature_list = []
-                    for city_name, row in df_purp_ratio_pivot.iterrows():
-                        max_item = row.idxmax()
-                        max_ratio = row.max()
-                        pc_val = df_purp_pc_pivot.loc[city_name, max_item]
-                        top_purp_feature_list.append({
-                            '自治体名': city_name,
-                            '最も重点的な支出分野': max_item,
-                            '対平均倍率': f"{max_ratio:.2f} 倍",
-                            '1人当たり金額': f"{pc_val:,.1f} 千円"
-                        })
-                    
-                    df_top_purp_feat = pd.DataFrame(top_purp_feature_list)
-                    st.dataframe(df_top_purp_feat, use_container_width=True, hide_index=True)
-
-                    st.markdown("---")
-
-                    # 3. 選択中の自治体の全項目一括ポジショニング
                     clean_sel_city = str(selected_city).strip()
                     df_sel_city_purp = df_purp_mat[df_purp_mat['自治体名'].str.contains(clean_sel_city, regex=False)].sort_values('対平均倍率', ascending=True)
 
