@@ -319,9 +319,20 @@ if menu == "概要":
                     if '自主財源_合計' in df_rank_base.columns and '歳入総額_calc' in df_rank_base.columns:
                         df_rank_base['自主財源比率(%)'] = ((df_rank_base['自主財源_合計'] / df_rank_base['歳入総額_calc'].replace(0, np.nan)) * 100).round(1)
 
+                    # 将来負担比率のカラム作成
                     future_burden_cols = [c for c in df_rank_base.columns if '将来負担比率' in c]
                     if future_burden_cols:
                         df_rank_base['将来負担比率(%)'] = pd.to_numeric(df_rank_base[future_burden_cols[0]], errors='coerce').round(1)
+
+                    # 👈 【追加】経常収支比率のカラム統一作成
+                    keijo_cols = [c for c in df_rank_base.columns if '経常収支比率' in c and not any(ex in c for ex in ['人件費', '公債費', '物件費', '扶助費', '繰出金', '特例除外'])]
+                    if keijo_cols:
+                        df_rank_base['経常収支比率'] = pd.to_numeric(df_rank_base[keijo_cols[0]], errors='coerce').round(1)
+
+                    # 👈 【追加】実質単年度収支のカラム統一作成
+                    tannendo_cols = [c for c in df_rank_base.columns if '実質単年度収支' in c]
+                    if tannendo_cols:
+                        df_rank_base['実質単年度収支'] = pd.to_numeric(df_rank_base[tannendo_cols[0]], errors='coerce').round(1)
 
                     def calc_score(series, is_higher_better=True):
                         s = pd.to_numeric(series, errors='coerce')
@@ -501,7 +512,7 @@ if menu == "概要":
                             
                             ranking_metrics_map = {
                                 '財政力指数': ('財政力指数', True, ''),
-                                '経常収支比率': ('経常収支比率（固定費の割合）', False, '%'),
+                                '経常収支比率': ('経常収支比率（財政の弾力性）', False, '%'),  # 👈 表示ラベルを統一・分かりやすく修正
                                 '将来負担比率(%)': ('将来負担比率', False, '%'),
                                 '1人当たり地方税収入(千円)': ('1人当たり地方税収入（地域の稼ぐ力）', True, '千円'),
                                 '1人当たり基金(千円)': ('1人当たり基金残高（自治体の貯蓄力）', True, '千円'),
@@ -825,16 +836,244 @@ if menu == "概要":
                             st.dataframe(df_rev_f, use_container_width=True, hide_index=True)
 
                 with comb_tab:
-                    st.markdown("##### ⚖️ 歳入（分母）と歳出（分子）の規模比較")
-                    m_col1, m_col2 = st.columns(2)
+                    st.markdown("##### ⚖️ 経常収支比率の計算構造バランス（分母 vs 分子）")
+
+                    # 1. 経常収支比率（最新値）を取得
+                    keijo_ratio = None
+                    if not df_ov_city.empty:
+                        keijo_cols = [c for c in df_ov_city.columns if '経常収支比率' in c and not any(ex in c for ex in ['人件費', '公債費', '物件費', '扶助費', '繰出金', '特例除外'])]
+                        if keijo_cols:
+                            latest_ov = df_ov_city.sort_values('年度').iloc[-1]
+                            val = pd.to_numeric(latest_ov[keijo_cols[0]], errors='coerce')
+                            if pd.notna(val):
+                                keijo_ratio = val
+
+                    tot_rev_gen = sum(found_rev_items.values()) if found_rev_items else 0
+                    calc_exp_gen = (tot_rev_gen * (keijo_ratio / 100.0)) if (tot_rev_gen > 0 and keijo_ratio is not None) else None
+                    tot_exp_gross = sum(found_exp_items.values()) if (found_exp_items and not is_percent_data) else 0
+                    specific_source = (tot_exp_gross - calc_exp_gen) if (tot_exp_gross > 0 and calc_exp_gen is not None) else 0
+
+                    # メトリクス表示
+                    m_col1, m_col2, m_col3 = st.columns(3)
                     with m_col1:
-                        if found_exp_items and not is_percent_data:
-                            st.metric("経常的支出（固定費概算）", f"{sum(found_exp_items.values()):,.0f} 千円")
-                        elif found_exp_items and is_percent_data:
-                            st.metric("経常的支出構成比（合計）", f"{sum(found_exp_items.values()):,.1f} %")
+                        if tot_rev_gen > 0:
+                            st.metric("経常一般財源（分母）", f"{tot_rev_gen:,.0f} 千円")
                     with m_col2:
-                        if found_rev_items:
-                            st.metric("経常一般財源（分母概算）", f"{sum(found_rev_items.values()):,.0f} 千円")
+                        if calc_exp_gen is not None:
+                            st.metric("充当一般財源（実質分子）", f"{calc_exp_gen:,.0f} 千円", delta=f"経常収支比率: {keijo_ratio:.1f}%", delta_color="normal")
+                    with m_col3:
+                        if tot_exp_gross > 0 and calc_exp_gen is not None:
+                            st.metric("うち特定財源（国県支出金等）", f"{max(0, specific_source):,.0f} 千円", delta=f"事業費総額: {tot_exp_gross:,.0f}千円", delta_color="off")
+                    
+                    st.markdown("---")
+                    st.markdown("##### 📈 充当一般財源（実質分子）の内訳 & 経常収支比率押し上げ要因分析（分離表示）")
+
+                    # 1. 人件費・公債費の公表値を取得
+                    pct_items = {}
+                    if not df_ov_city.empty:
+                        latest_ov = df_ov_city.sort_values('年度').iloc[-1]
+                        if '経常収支比率_人件費_パーセント' in latest_ov and pd.notna(latest_ov['経常収支比率_人件費_パーセント']):
+                            pct_items['人件費'] = float(latest_ov['経常収支比率_人件費_パーセント'])
+                        if '経常収支比率_公債費_パーセント' in latest_ov and pd.notna(latest_ov['経常収支比率_公債費_パーセント']):
+                            pct_items['公債費'] = float(latest_ov['経常収支比率_公債費_パーセント'])
+
+                    # 2. 性質別歳出の事業費比率に基づき残りを「扶助費」「物件費」「補助費等」等に推計分解
+                    known_sum = sum(pct_items.values())
+                    remaining_pct = (keijo_ratio - known_sum) if (keijo_ratio and keijo_ratio > known_sum) else 0
+
+                    if remaining_pct > 0 and not df_exp_city.empty:
+                        latest_exp = df_exp_city.sort_values('年度').iloc[-1]
+                        
+                        sub_exp_map = {
+                            '扶助費': '扶助費_合計',
+                            '補助費等': '補助費等_合計',
+                            '物件費': '物件費_合計',
+                            '繰出金': '繰出金_合計',
+                            '維持補修費': '維持補修費_合計'
+                        }
+                        
+                        sub_vals = {}
+                        for label, col_name in sub_exp_map.items():
+                            if col_name in latest_exp and pd.notna(latest_exp[col_name]):
+                                sub_vals[label] = float(latest_exp[col_name])
+
+                        sub_tot = sum(sub_vals.values())
+                        if sub_tot > 0:
+                            for label, val in sub_vals.items():
+                                # 残りの%ptを事業費の構成比で按分推計
+                                pct_items[f"{label}(推計)"] = round(remaining_pct * (val / sub_tot), 1)
+
+                    if pct_items and tot_rev_gen > 0:
+                        df_factor = pd.DataFrame([
+                            {
+                                '経費項目': k,
+                                '押し上げ比率(%pt)': v,
+                                '充当一般財源(千円)': round(tot_rev_gen * (v / 100.0)),
+                                '充当一般財源(億円)': round(tot_rev_gen * (v / 100.0) / 100000, 1)
+                            }
+                            for k, v in pct_items.items()
+                        ]).sort_values('押し上げ比率(%pt)', ascending=False)
+
+                        f_col1, f_col2 = st.columns([3, 2])
+                        with f_col1:
+                            fig_factor = px.bar(
+                                df_factor, x='押し上げ比率(%pt)', y='経費項目', orientation='h',
+                                text='押し上げ比率(%pt)', color='押し上げ比率(%pt)', color_continuous_scale='Reds',
+                                title=f"{selected_city} 経常収支比率（{keijo_ratio:.1f}%）の経費別押し上げ寄与度"
+                            )
+                            fig_factor.update_traces(texttemplate='%{text:.1f} %pt', textposition='outside')
+                            fig_factor.update_layout(xaxis_title="経常収支比率への押し上げ寄与度 (%pt)", yaxis_title="経費項目", height=380)
+                            st.plotly_chart(fig_factor, use_container_width=True, key="keijo_factor_push_bar")
+
+                        with f_col2:
+                            st.markdown("##### 📋 充当一般財源（自前負担）の推定内訳")
+                            st.dataframe(df_factor[['経費項目', '押し上げ比率(%pt)', '充当一般財源(億円)']], use_container_width=True, hide_index=True)
+
+                        st.caption("※ 扶助費・物件費・補助費等・繰出金等の値は、人件費・公債費以外の一般財源充当分を性質別歳出の事業費比率に基づき推計・分解した値です。")
+
+                        # =========================================================
+                    # 🌐 全国平均・県内平均との比較分析（%pt寄与度 & 1人当たり歳出額）
+                    # =========================================================
+                    st.markdown("---")
+                    st.markdown("##### 🌐 全国平均・県内平均との比較分析")
+
+                    # 分析対象年度の特定
+                    if not df_ov_city.empty and '年度' in df_ov_city.columns:
+                        latest_year_str = str(df_ov_city.sort_values('年度').iloc[-1]['年度'])
+                        
+                        # 対象年度の全体データフィルタリング
+                        df_ov_y_all = df_overview[df_overview['年度'].astype(str) == latest_year_str].copy() if not df_overview.empty else pd.DataFrame()
+                        df_exp_y_all = df_exp_nature[df_exp_nature['年度'].astype(str) == latest_year_str].copy() if not df_exp_nature.empty else pd.DataFrame()
+
+                        if not df_ov_y_all.empty and not df_exp_y_all.empty:
+                            # データの結合
+                            merge_keys = ['都道府県', '団体名', '年度'] if ('都道府県' in df_ov_y_all.columns and '都道府県' in df_exp_y_all.columns) else ['団体名', '年度']
+                            df_comp_all = pd.merge(df_ov_y_all, df_exp_y_all, on=merge_keys, how='inner', suffixes=('', '_exp'))
+
+                            # 1. 押し上げ寄与度（%pt）の算出ヘルパー関数
+                            def calc_factor_push_series(df_target):
+                                sub_map = {
+                                    '扶助費': '扶助費_合計',
+                                    '補助費等': '補助費等_合計',
+                                    '物件費': '物件費_合計',
+                                    '繰出金': '繰出金_合計',
+                                    '維持補修費': '維持補修費_合計'
+                                }
+                                records = []
+                                for _, row in df_target.iterrows():
+                                    keijo = pd.to_numeric(row.get('経常収支比率_パーセント'), errors='coerce')
+                                    jin = pd.to_numeric(row.get('経常収支比率_人件費_パーセント'), errors='coerce') if pd.notna(row.get('経常収支比率_人件費_パーセント')) else 0
+                                    ko = pd.to_numeric(row.get('経常収支比率_公債費_パーセント'), errors='coerce') if pd.notna(row.get('経常収支比率_公債費_パーセント')) else 0
+                                    
+                                    if pd.isna(keijo):
+                                        continue
+                                    
+                                    rem = max(0, keijo - jin - ko)
+                                    sub_vals = {lbl: float(row[col]) for lbl, col in sub_map.items() if col in row and pd.notna(row[col])}
+                                    sub_tot = sum(sub_vals.values())
+                                    
+                                    rec = {'人件費': jin, '公債費': ko, '経常収支比率': keijo}
+                                    if sub_tot > 0:
+                                        for lbl, val in sub_vals.items():
+                                            rec[f"{lbl}(推計)"] = rem * (val / sub_tot)
+                                    records.append(rec)
+                                return pd.DataFrame(records).mean() if records else pd.Series()
+
+                            # 2. 人口カラムの検出と1人当たり歳出額（千円/人）の算出ヘルパー関数
+                            pop_col_name = get_population_col(df_ov_y_all)
+                            def calc_per_capita_series(df_target):
+                                if not pop_col_name or pop_col_name not in df_target.columns:
+                                    return pd.Series()
+                                tot_pop = pd.to_numeric(df_target[pop_col_name], errors='coerce').sum()
+                                if tot_pop <= 0:
+                                    return pd.Series()
+                                
+                                exp_cols_map = {
+                                    '扶助費': '扶助費_合計', '人件費': '人件費_合計', '補助費等': '補助費等_合計',
+                                    '物件費': '物件費_合計', '公債費': '公債費_合計', '繰出金': '繰出金_合計', '維持補修費': '維持補修費_合計'
+                                }
+                                res = {}
+                                for lbl, col in exp_cols_map.items():
+                                    if col in df_target.columns:
+                                        tot_val = pd.to_numeric(df_target[col], errors='coerce').sum()
+                                        res[lbl] = round(tot_val / tot_pop, 1)
+                                return pd.Series(res)
+
+                            # グループごとの抽出
+                            # A. 対象自治体
+                            df_target_city = df_comp_all[df_comp_all['団体名'].astype(str).str.contains(str(selected_city).strip(), regex=False)]
+                            # B. 都道府県平均
+                            df_target_pref = df_comp_all[df_comp_all['都道府県'].astype(str) == str(selected_pref).strip()] if selected_pref != "全国" else df_comp_all
+                            # C. 全国平均
+                            df_target_japan = df_comp_all
+
+                            # 各指標の算出
+                            s_push_city = calc_factor_push_series(df_target_city)
+                            s_push_pref = calc_factor_push_series(df_target_pref)
+                            s_push_japan = calc_factor_push_series(df_target_japan)
+
+                            s_pc_city = calc_per_capita_series(df_target_city)
+                            s_pc_pref = calc_per_capita_series(df_target_pref)
+                            s_pc_japan = calc_per_capita_series(df_target_japan)
+
+                            # サブタブの作成
+                            tab_comp_push, tab_comp_pc = st.tabs(["📊 押し上げ寄与度(%pt)の比較", "👥 1人当たり歳出額(千円/人)の比較"])
+
+                            # --- Tab 1: 押し上げ寄与度(%pt)の比較 ---
+                            with tab_comp_push:
+                                if not s_push_city.empty:
+                                    items_order = ['経常収支比率', '人件費', '扶助費(推計)', '公債費', '補助費等(推計)', '物件費(推計)', '繰出金(推計)', '維持補修費(推計)']
+                                    df_push_comp = pd.DataFrame({
+                                        '項目名': items_order,
+                                        f'{selected_city}': [round(s_push_city.get(it, 0), 1) for it in items_order],
+                                        f'{selected_pref}平均' if selected_pref != "全国" else '県内平均': [round(s_push_pref.get(it, 0), 1) for it in items_order],
+                                        '全国平均': [round(s_push_japan.get(it, 0), 1) for it in items_order]
+                                    })
+
+                                    # グラフ用メルト
+                                    df_push_melt = df_push_comp[df_push_comp['項目名'] != '経常収支比率'].melt(
+                                        id_vars=['項目名'], var_name='比較対象', value_name='寄与度(%pt)'
+                                    )
+
+                                    fig_push_comp = px.bar(
+                                        df_push_melt, x='項目名', y='寄与度(%pt)', color='比較対象', barmode='group',
+                                        text='寄与度(%pt)',
+                                        title=f"{selected_city} vs 全国・県内平均 経費別押し上げ寄与度(%pt)比較（{latest_year_str}年度）",
+                                        color_discrete_map={f'{selected_city}': '#FF4B4B', f'{selected_pref}平均': '#2CA02C', '県内平均': '#2CA02C', '全国平均': '#1F77B4'}
+                                    )
+                                    fig_push_comp.update_traces(texttemplate='%{text:.1f}%pt', textposition='outside')
+                                    fig_push_comp.update_layout(xaxis_title="経費項目", yaxis_title="押し上げ寄与度 (%pt)", height=400, legend_title_text="")
+                                    st.plotly_chart(fig_push_comp, use_container_width=True, key="comp_push_factor_bar")
+
+                                    st.markdown("##### 📋 経常収支比率 押し上げ寄与度（%pt）データ一覧")
+                                    st.dataframe(df_push_comp, use_container_width=True, hide_index=True)
+
+                            # --- Tab 2: 1人当たり歳出額(千円/人)の比較 ---
+                            with tab_comp_pc:
+                                if not s_pc_city.empty:
+                                    pc_items_order = ['扶助費', '人件費', '補助費等', '物件費', '公債費', '繰出金', '維持補修費']
+                                    df_pc_comp = pd.DataFrame({
+                                        '項目名': pc_items_order,
+                                        f'{selected_city}': [s_pc_city.get(it, 0) for it in pc_items_order],
+                                        f'{selected_pref}平均' if selected_pref != "全国" else '県内平均': [s_pc_pref.get(it, 0) for it in pc_items_order],
+                                        '全国平均': [s_pc_japan.get(it, 0) for it in pc_items_order]
+                                    })
+
+                                    # グラフ用メルト
+                                    df_pc_melt = df_pc_comp.melt(id_vars=['項目名'], var_name='比較対象', value_name='1人当たり金額(千円)')
+
+                                    fig_pc_comp = px.bar(
+                                        df_pc_melt, x='項目名', y='1人当たり金額(千円)', color='比較対象', barmode='group',
+                                        text='1人当たり金額(千円)',
+                                        title=f"{selected_city} vs 全国・県内平均 住民1人当たり性質別歳出(千円/人)比較（{latest_year_str}年度）",
+                                        color_discrete_map={f'{selected_city}': '#FF4B4B', f'{selected_pref}平均': '#2CA02C', '県内平均': '#2CA02C', '全国平均': '#1F77B4'}
+                                    )
+                                    fig_pc_comp.update_traces(texttemplate='%{text:,.1f}千円', textposition='outside')
+                                    fig_pc_comp.update_layout(xaxis_title="経費項目", yaxis_title="1人当たり金額（千円/人）", height=400, legend_title_text="")
+                                    st.plotly_chart(fig_pc_comp, use_container_width=True, key="comp_per_capita_bar")
+
+                                    st.markdown("##### 📋 住民1人当たり歳出額（千円/人）データ一覧")
+                                    st.dataframe(df_pc_comp, use_container_width=True, hide_index=True)
 
             with subtab_eff2:
                 cols_scale = [
@@ -1368,88 +1607,9 @@ elif menu == "性質別歳出":
                     fig_exp_pc.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>1人当たり金額: %{y:,.2f} 千円/人<br>構成比: %{customdata[1]}%<extra></extra>")
                     st.plotly_chart(fig_exp_pc, use_container_width=True, key="exp_nature_pc_trend")
 
-        # B. 概要データ（df_ov_city）からの柔軟なフォールバック処理
-        # --- 修正後：フォールバック処理（歳入と同様に金額表示＆1人当たり＆ホバー詳細表示） ---
+        # B. 詳細データが存在しない場合はメッセージのみ表示
         else:
-            # 1. 概要データから歳出関連の金額カラムを検索
-            ov_exp_cols = [
-                c for c in df_ov_city.columns 
-                if any(kw in c for kw in ['人件費', '公債費', '扶助費', '物件費', '繰出金', '普通建設', '歳出']) 
-                and not any(ex in c for ex in ['1人当たり', '比率', 'パーセント', '%'])
-            ]
-            
-            # 2. 直接の金額カラムがない場合は割合カラムから歳出金額を換算算出
-            ov_exp_pct_cols = [
-                c for c in df_ov_city.columns 
-                if any(kw in c for kw in ['人件費', '公債費', '扶助費', '物件費', '繰出金']) 
-                and any(ex in c for ex in ['比率', 'パーセント', '%'])
-            ] if not ov_exp_cols else []
-
-            if (ov_exp_cols or ov_exp_pct_cols) and not df_ov_city.empty:
-                st.info(f"💡 **{selected_city}** の概要データより、主要性質別歳出の金額推移を表示します。")
-                
-                df_ov_plot = df_ov_city.copy()
-                df_ov_plot['人口_num'] = get_population_series(df_ov_plot, df_overview, "latest")
-
-                if ov_exp_cols:
-                    # 金額データが存在する場合
-                    df_melt_ov = df_ov_plot.melt(id_vars=['年度', '人口_num'], value_vars=ov_exp_cols, var_name='項目_raw', value_name='金額')
-                    df_melt_ov['項目名'] = df_melt_ov['項目_raw'].apply(clean_col_label)
-                else:
-                    # 比率データのみ存在する場合：歳出規模から概算金額（千円）へ換算
-                    tot_col = next((c for c in df_ov_plot.columns if any(kw in c for kw in ['歳出決算額', '歳出総額', '歳入総額', '標準財政規模']) and not any(ex in c for ex in ['比率', '%'])), None)
-                    total_val = df_ov_plot[tot_col] if tot_col else 10000000
-
-                    for col in ov_exp_pct_cols:
-                        clean_c = clean_col_label(col)
-                        df_ov_plot[clean_c + '_金額'] = (df_ov_plot[col] / 100.0) * total_val
-
-                    calc_amt_cols = [clean_col_label(col) + '_金額' for col in ov_exp_pct_cols]
-                    df_melt_ov = df_ov_plot.melt(id_vars=['年度', '人口_num'], value_vars=calc_amt_cols, var_name='項目_raw', value_name='金額')
-                    df_melt_ov['項目名'] = df_melt_ov['項目_raw'].apply(lambda x: x.replace('_金額', ''))
-
-                df_melt_ov = df_melt_ov.groupby(['年度', '人口_num', '項目名'], as_index=False)['金額'].sum()
-                
-                # 年度ごとの合計額と構成比(%)の算出
-                year_totals = df_melt_ov.groupby('年度')['金額'].transform('sum')
-                df_melt_ov['歳出合計'] = year_totals
-                df_melt_ov['割合(%)'] = (df_melt_ov['金額'] / df_melt_ov['歳出合計'].replace(0, np.nan) * 100).fillna(0).round(1)
-                
-                # 1人当たり金額の計算
-                df_melt_ov['1人当たり金額'] = (df_melt_ov['金額'] / df_melt_ov['人口_num'].replace(0, np.nan)).round(2)
-
-                # 歳入メニューと同様に2つのタブを設置
-                sub_exp_tot_fb, sub_exp_pc_fb = st.tabs(["💰 総額推移", "👥 人口1人当たり推移"])
-
-                # --- 1. 総額推移タブ ---
-                with sub_exp_tot_fb:
-                    fig_ov_exp = px.bar(
-                        df_melt_ov, x='年度', y='金額', color='項目名',
-                        title=f"{selected_city} 性質別歳出の推移（総額・概要データ）", barmode='stack',
-                        custom_data=['項目名', '割合(%)']
-                    )
-                    fig_ov_exp.update_layout(yaxis_tickformat=",", yaxis_title="金額（千円）")
-                    # クリック・ホバー時に「項目名」「金額（千円）」「構成比（%）」を明示表示
-                    fig_ov_exp.update_traces(
-                        hovertemplate="<b>%{customdata[0]}</b><br>金額: %{y:,.0f} 千円<br>構成比: %{customdata[1]}%<extra></extra>"
-                    )
-                    st.plotly_chart(fig_ov_exp, use_container_width=True, key="exp_ov_tot_fallback_chart")
-
-                # --- 2. 1人当たり推移タブ ---
-                with sub_exp_pc_fb:
-                    fig_ov_exp_pc = px.bar(
-                        df_melt_ov, x='年度', y='1人当たり金額', color='項目名',
-                        title=f"{selected_city} 性質別歳出の推移（1人当たり・概要データ）", barmode='stack',
-                        custom_data=['項目名', '割合(%)']
-                    )
-                    fig_ov_exp_pc.update_layout(yaxis_tickformat=",.1f", yaxis_title="1人当たり金額（千円/人）")
-                    # クリック・ホバー時に「項目名」「1人当たり金額」「構成比（%）」を明示表示
-                    fig_ov_exp_pc.update_traces(
-                        hovertemplate="<b>%{customdata[0]}</b><br>1人当たり金額: %{y:,.2f} 千円/人<br>構成比: %{customdata[1]}%<extra></extra>"
-                    )
-                    st.plotly_chart(fig_ov_exp_pc, use_container_width=True, key="exp_ov_pc_fallback_chart")
-            else:
-                st.warning(f"⚠️ **{selected_city}** の性質別歳出データが検出されませんでした。「自治体間比較」タブをご参照ください。")
+            st.info(f"💡 **{selected_city}** の性質別歳出データはありません。")
 
         # --- 2. 自治体間比較 ---
         with tab_exp_comp:
@@ -1816,47 +1976,9 @@ elif menu == "目的別歳出":
                     fig_p_pc.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>1人当たり金額: %{y:,.2f} 千円/人<br>構成比: %{customdata[1]}%<extra></extra>")
                     st.plotly_chart(fig_p_pc, use_container_width=True, key="purp_pc_trend_chart")
 
-        # B. 概要データ（df_ov_city）からの柔軟なフォールバック処理
+        # B. 詳細データが存在しない場合はメッセージのみ表示
         else:
-            ov_purp_cols = [
-                c for c in df_ov_city.columns 
-                if any(kw in c for kw in ['民生費', '土木費', '教育費', '総務費', '衛生費', '農林水産', '商工費', '消防費', '公債費']) 
-                and not any(ex in c for ex in ['1人当たり', '比率', 'パーセント', '%'])
-            ]
-            ov_purp_pct_cols = [
-                c for c in df_ov_city.columns 
-                if any(kw in c for kw in ['民生費', '土木費', '教育費', '総務費', '衛生費', '農林水産', '商工費', '消防費', '公債費']) 
-                and any(ex in c for ex in ['比率', 'パーセント', '%'])
-            ]
-
-            if ov_purp_cols and not df_ov_city.empty:
-                st.info(f"💡 **{selected_city}** の概要データから主要な目的別歳出（金額）の推移を表示します。")
-                df_ov_p_plot = df_ov_city[['年度'] + ov_purp_cols].copy()
-                df_ov_p_plot = df_ov_p_plot.rename(columns={c: clean_col_label(c) for c in ov_purp_cols})
-                
-                fig_ov_purp = px.line(
-                    df_ov_p_plot, x='年度', y=[clean_col_label(c) for c in ov_purp_cols], 
-                    markers=True, title=f"{selected_city} 主要目的別歳出の推移（概要データ）"
-                )
-                fig_ov_purp.update_layout(yaxis_title="金額（千円）", yaxis_tickformat=",")
-                st.plotly_chart(fig_ov_purp, use_container_width=True, key="purp_ov_fallback_chart")
-
-            elif ov_purp_pct_cols and not df_ov_city.empty:
-                st.info(f"💡 **{selected_city}** の概要データから主要な目的別構成比率の推移を表示します。")
-                df_ov_p_pct_plot = df_ov_city[['年度'] + ov_purp_pct_cols].copy()
-                clean_names_p = [clean_col_label(c) for c in ov_purp_pct_cols]
-                df_ov_p_pct_plot.columns = ['年度'] + clean_names_p
-                
-                fig_ov_p_pct = px.bar(
-                    df_ov_p_pct_plot.melt(id_vars=['年度'], var_name='事業項目', value_name='比率(%)'),
-                    x='年度', y='比率(%)', color='事業項目', barmode='stack',
-                    title=f"{selected_city} 目的別支出構成比の推移（概要データ）"
-                )
-                fig_ov_p_pct.update_layout(yaxis_title="構成比 (%)")
-                st.plotly_chart(fig_ov_p_pct, use_container_width=True, key="purp_ov_pct_fallback_chart")
-
-            else:
-                st.warning(f"⚠️ **{selected_city}** の目的別歳出データが検出されませんでした。「自治体間比較」タブをご参照ください。")
+            st.info(f"💡 **{selected_city}** の目的別歳出データはありません。")
 
         # --- 2. 自治体間比較 ---
         with tab_purp_comp:
