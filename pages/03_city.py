@@ -931,8 +931,8 @@ if menu == "概要":
 
                         st.caption("※ 扶助費・物件費・補助費等・繰出金等の値は、人件費・公債費以外の一般財源充当分を性質別歳出の事業費比率に基づき推計・分解した値です。")
 
-                        # =========================================================
-                    # 🌐 全国平均・県内平均との比較分析（%pt寄与度 & 1人当たり歳出額）
+                    # =========================================================
+                    # 🌐 全国平均・県内平均との比較分析（%pt寄与度 & 1人当たり歳出額・歳入額）
                     # =========================================================
                     st.markdown("---")
                     st.markdown("##### 🌐 全国平均・県内平均との比較分析")
@@ -944,11 +944,14 @@ if menu == "概要":
                         # 対象年度の全体データフィルタリング
                         df_ov_y_all = df_overview[df_overview['年度'].astype(str) == latest_year_str].copy() if not df_overview.empty else pd.DataFrame()
                         df_exp_y_all = df_exp_nature[df_exp_nature['年度'].astype(str) == latest_year_str].copy() if not df_exp_nature.empty else pd.DataFrame()
+                        df_rev_y_all = df_revenue[df_revenue['年度'].astype(str) == latest_year_str].copy() if not df_revenue.empty else pd.DataFrame()
 
                         if not df_ov_y_all.empty and not df_exp_y_all.empty:
                             # データの結合
                             merge_keys = ['都道府県', '団体名', '年度'] if ('都道府県' in df_ov_y_all.columns and '都道府県' in df_exp_y_all.columns) else ['団体名', '年度']
                             df_comp_all = pd.merge(df_ov_y_all, df_exp_y_all, on=merge_keys, how='inner', suffixes=('', '_exp'))
+                            if not df_rev_y_all.empty:
+                                df_comp_all = pd.merge(df_comp_all, df_rev_y_all, on=merge_keys, how='left', suffixes=('', '_rev'))
 
                             # 1. 押し上げ寄与度（%pt）の算出ヘルパー関数
                             def calc_factor_push_series(df_target):
@@ -999,12 +1002,28 @@ if menu == "概要":
                                         res[lbl] = round(tot_val / tot_pop, 1)
                                 return pd.Series(res)
 
+                            # 3. 1人当たり歳入額（千円/人）の算出ヘルパー関数（👈 追加）
+                            def calc_rev_per_capita_series(df_target):
+                                if not pop_col_name or pop_col_name not in df_target.columns:
+                                    return pd.Series()
+                                tot_pop = pd.to_numeric(df_target[pop_col_name], errors='coerce').sum()
+                                if tot_pop <= 0:
+                                    return pd.Series()
+                                
+                                rev_cols_map = {
+                                    '地方税': '地方税_合計', '地方交付税': '地方交付税_合計', '国庫支出金': '国庫支出金_合計',
+                                    '都道府県支出金': '都道府県支出金_合計', '地方債': '地方債_合計', '繰入金': '繰入金_合計', '諸収入': '諸収入_合計'
+                                }
+                                res = {}
+                                for lbl, col in rev_cols_map.items():
+                                    if col in df_target.columns:
+                                        tot_val = pd.to_numeric(df_target[col], errors='coerce').sum()
+                                        res[lbl] = round(tot_val / tot_pop, 1)
+                                return pd.Series(res)
+
                             # グループごとの抽出
-                            # A. 対象自治体
                             df_target_city = df_comp_all[df_comp_all['団体名'].astype(str).str.contains(str(selected_city).strip(), regex=False)]
-                            # B. 都道府県平均
                             df_target_pref = df_comp_all[df_comp_all['都道府県'].astype(str) == str(selected_pref).strip()] if selected_pref != "全国" else df_comp_all
-                            # C. 全国平均
                             df_target_japan = df_comp_all
 
                             # 各指標の算出
@@ -1016,8 +1035,16 @@ if menu == "概要":
                             s_pc_pref = calc_per_capita_series(df_target_pref)
                             s_pc_japan = calc_per_capita_series(df_target_japan)
 
-                            # サブタブの作成
-                            tab_comp_push, tab_comp_pc = st.tabs(["📊 押し上げ寄与度(%pt)の比較", "👥 1人当たり歳出額(千円/人)の比較"])
+                            s_rev_pc_city = calc_rev_per_capita_series(df_target_city)
+                            s_rev_pc_pref = calc_rev_per_capita_series(df_target_pref)
+                            s_rev_pc_japan = calc_rev_per_capita_series(df_target_japan)
+
+                            # サブタブの作成（👈 歳入額比較タブを追加）
+                            tab_comp_push, tab_comp_pc, tab_comp_rev_pc = st.tabs([
+                                "📊 押し上げ寄与度(%pt)の比較", 
+                                "👥 1人当たり歳出額(千円/人)の比較", 
+                                "💰 1人当たり歳入額(千円/人)の比較"
+                            ])
 
                             # --- Tab 1: 押し上げ寄与度(%pt)の比較 ---
                             with tab_comp_push:
@@ -1030,7 +1057,6 @@ if menu == "概要":
                                         '全国平均': [round(s_push_japan.get(it, 0), 1) for it in items_order]
                                     })
 
-                                    # グラフ用メルト
                                     df_push_melt = df_push_comp[df_push_comp['項目名'] != '経常収支比率'].melt(
                                         id_vars=['項目名'], var_name='比較対象', value_name='寄与度(%pt)'
                                     )
@@ -1059,7 +1085,6 @@ if menu == "概要":
                                         '全国平均': [s_pc_japan.get(it, 0) for it in pc_items_order]
                                     })
 
-                                    # グラフ用メルト
                                     df_pc_melt = df_pc_comp.melt(id_vars=['項目名'], var_name='比較対象', value_name='1人当たり金額(千円)')
 
                                     fig_pc_comp = px.bar(
@@ -1074,6 +1099,33 @@ if menu == "概要":
 
                                     st.markdown("##### 📋 住民1人当たり歳出額（千円/人）データ一覧")
                                     st.dataframe(df_pc_comp, use_container_width=True, hide_index=True)
+
+                            # --- Tab 3: 1人当たり歳入額(千円/人)の比較（👈 新規追加） ---
+                            with tab_comp_rev_pc:
+                                if not s_rev_pc_city.empty:
+                                    rev_pc_items_order = ['地方税', '地方交付税', '国庫支出金', '都道府県支出金', '地方債', '繰入金', '諸収入']
+                                    rev_pc_items_order = [it for it in rev_pc_items_order if it in s_rev_pc_city.index]
+                                    df_rev_pc_comp = pd.DataFrame({
+                                        '項目名': rev_pc_items_order,
+                                        f'{selected_city}': [s_rev_pc_city.get(it, 0) for it in rev_pc_items_order],
+                                        f'{selected_pref}平均' if selected_pref != "全国" else '県内平均': [s_rev_pc_pref.get(it, 0) for it in rev_pc_items_order],
+                                        '全国平均': [s_rev_pc_japan.get(it, 0) for it in rev_pc_items_order]
+                                    })
+
+                                    df_rev_pc_melt = df_rev_pc_comp.melt(id_vars=['項目名'], var_name='比較対象', value_name='1人当たり金額(千円)')
+
+                                    fig_rev_pc_comp = px.bar(
+                                        df_rev_pc_melt, x='項目名', y='1人当たり金額(千円)', color='比較対象', barmode='group',
+                                        text='1人当たり金額(千円)',
+                                        title=f"{selected_city} vs 全国・県内平均 住民1人当たり主要歳入(千円/人)比較（{latest_year_str}年度）",
+                                        color_discrete_map={f'{selected_city}': '#FF4B4B', f'{selected_pref}平均': '#2CA02C', '県内平均': '#2CA02C', '全国平均': '#1F77B4'}
+                                    )
+                                    fig_rev_pc_comp.update_traces(texttemplate='%{text:,.1f}千円', textposition='outside')
+                                    fig_rev_pc_comp.update_layout(xaxis_title="歳入項目", yaxis_title="1人当たり金額（千円/人）", height=400, legend_title_text="")
+                                    st.plotly_chart(fig_rev_pc_comp, use_container_width=True, key="comp_rev_per_capita_bar")
+
+                                    st.markdown("##### 📋 住民1人当たり歳入額（千円/人）データ一覧")
+                                    st.dataframe(df_rev_pc_comp, use_container_width=True, hide_index=True)
 
             with subtab_eff2:
                 cols_scale = [
